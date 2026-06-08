@@ -24,8 +24,8 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           # OAuth subscription token (from `claude setup-token`) — NOT an API key.
-          # The input is named anthropic_api_key but accepts the OAuth token too.
-          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Must use the dedicated claude_code_oauth_token input.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: "Read PROMPT.md in this repository and follow its instructions exactly, end to end."
           claude_args: |
             --model claude-opus-4-8
