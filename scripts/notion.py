@@ -1,12 +1,12 @@
 """Shared Notion helpers for the Bluon Email Machine.
 
-Reads the Email Content Intelligence guide and the Email Calendar database,
-and creates draft rows whose page body is laid out to LOOK like a real Bluon
-email (branded header, blue headline, hero placeholder, benefit bullets, a
-button-style CTA, footer). Auth via the NOTION_TOKEN env var. Read + create
-only — never sends an email, never deletes.
+Lean machine: the database holds only stable metadata (Audience, Engagement,
+Channel, Feature, Send Date, Approved, Done). The editable email itself —
+suggested subject, the plain body text Pete can rewrite freely, and a rendered
+mockup of how it'll look as a Bluon HubSpot email — lives in the page body.
+Auth via NOTION_TOKEN. Read + create only; never sends, never hard-deletes.
 """
-import os, json, urllib.request, urllib.error
+import os, json, datetime, urllib.request, urllib.error
 
 NV = "2022-06-28"
 API = "https://api.notion.com/v1"
@@ -14,19 +14,14 @@ TOKEN = os.environ.get("NOTION_TOKEN", "").strip()
 
 GUIDE_PAGE_ID = "379576a5-c12d-8147-af4d-e131c8a1529e"   # Email Content Intelligence
 CALENDAR_DB_ID = "379576a5-c12d-816e-a09a-c7bbd50a4c26"  # Email Calendar
-
-# Bluon brand (from HubSpot email styleSettings)
-BLUE = "blue"            # closest Notion color to Bluon #23496d / #3574E3
-FOOTER = ("Bluon, Inc., 9160 Irvine Center Drive, Suite 100, Irvine, CA  ·  "
-          "Unsubscribe | Manage preferences")
+BLUE = "blue"
 
 
 def _call(method, path, body=None):
     if not TOKEN:
         raise SystemExit("NOTION_TOKEN env var is not set.")
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        API + path, data=data, method=method,
+    req = urllib.request.Request(API + path, data=data, method=method,
         headers={"Authorization": f"Bearer {TOKEN}", "Notion-Version": NV,
                  "Content-Type": "application/json"})
     try:
@@ -67,16 +62,16 @@ def get_guide_text():
     return "\n".join(_blocks_to_text(GUIDE_PAGE_ID))
 
 
-def _prop_text(props, name):
+def _prop(props, name):
     p = props.get(name, {}); t = p.get("type")
     if t == "title":
         return "".join(x.get("plain_text", "") for x in p["title"])
-    if t == "rich_text":
-        return "".join(x.get("plain_text", "") for x in p["rich_text"])
     if t == "select":
         return (p["select"] or {}).get("name", "")
     if t == "date":
         return (p["date"] or {}).get("start", "")
+    if t == "checkbox":
+        return p["checkbox"]
     return ""
 
 
@@ -85,24 +80,20 @@ def get_calendar_rows():
     res = _call("POST", f"/databases/{CALENDAR_DB_ID}/query", {"page_size": 100})
     for r in res.get("results", []):
         pr = r.get("properties", {})
-        rows.append({"id": r["id"], "email": _prop_text(pr, "Email"),
-                     "status": _prop_text(pr, "Status"), "audience": _prop_text(pr, "Audience"),
-                     "engagement": _prop_text(pr, "Engagement"), "send_date": _prop_text(pr, "Send Date"),
-                     "subject": _prop_text(pr, "Subject Line")})
+        rows.append({"id": r["id"], "name": _prop(pr, "Email"),
+                     "audience": _prop(pr, "Audience"), "engagement": _prop(pr, "Engagement"),
+                     "channel": _prop(pr, "Channel"), "send_date": _prop(pr, "Send Date"),
+                     "approved": _prop(pr, "Approved"), "done": _prop(pr, "Done")})
     return rows
 
 
 def archive_row(page_id):
-    """Soft-delete (move to Notion trash) — recoverable, not a hard delete."""
     _call("PATCH", f"/pages/{page_id}", {"archived": True})
 
 
-# ---------- email-styled page body ----------
-def _t(content, *, bold=False, italic=False, color=None, link=None):
-    txt = {"content": content}
-    if link:
-        txt["link"] = {"url": link}
-    o = {"type": "text", "text": txt}
+# ---------- page body (editable email) ----------
+def _t(content, *, bold=False, italic=False, color=None):
+    o = {"type": "text", "text": {"content": content}}
     ann = {}
     if bold: ann["bold"] = True
     if italic: ann["italic"] = True
@@ -111,73 +102,81 @@ def _t(content, *, bold=False, italic=False, color=None, link=None):
     return o
 
 
-def _email_blocks(*, subject, preview, body, cta, cta_url=None):
-    """Render an email-looking layout with native Notion blocks."""
-    blocks = []
-    # branded header bar
-    blocks.append({"object": "block", "type": "callout", "callout": {
-        "rich_text": [_t("bluon", bold=True, color=BLUE), _t("   FOR BUSINESS", color=BLUE)],
-        "icon": {"type": "emoji", "emoji": "📧"}, "color": "blue_background"}})
-    # blue headline (the subject as the email H1)
-    blocks.append({"object": "block", "type": "heading_2",
-                   "heading_2": {"rich_text": [_t(subject, bold=True, color=BLUE)]}})
-    # preview text (muted)
+def _week_of(send_date):
+    try:
+        d = datetime.date.fromisoformat(send_date)
+        monday = d - datetime.timedelta(days=d.weekday())
+        return monday.strftime("%b %-d")
+    except Exception:
+        return None
+
+
+def _draft_page_blocks(*, subject, preview, body, cta, feature, image_fid):
+    b = []
+    # suggested subject (editable starting point)
+    b.append({"object": "block", "type": "callout", "callout": {
+        "rich_text": [_t("Suggested subject:  ", bold=True), _t(subject)],
+        "icon": {"type": "emoji", "emoji": "✏️"}, "color": "gray_background"}})
     if preview:
-        blocks.append({"object": "block", "type": "paragraph",
-                       "paragraph": {"rich_text": [_t("Preview: " + preview, italic=True, color="gray")]}})
-    # hero placeholder (real emails lead with a hero image / video thumbnail)
-    blocks.append({"object": "block", "type": "callout", "callout": {
-        "rich_text": [_t("Hero image / video thumbnail goes here", color="gray")],
-        "icon": {"type": "emoji", "emoji": "🖼"}, "color": "gray_background"}})
-    # body — paragraphs + bullets parsed from the generated body
+        b.append({"object": "block", "type": "paragraph",
+                  "paragraph": {"rich_text": [_t("Preview: " + preview, italic=True, color="gray")]}})
+    b.append({"object": "block", "type": "heading_3",
+              "heading_3": {"rich_text": [_t("Body  (edit freely — this is a first draft)")]}})
+    # the actual email body, plain editable text + bullets
     for raw in (body or "").split("\n"):
         line = raw.strip()
         if not line:
             continue
         if line[:1] in ("-", "•", "*"):
-            blocks.append({"object": "block", "type": "bulleted_list_item",
-                           "bulleted_list_item": {"rich_text": [_t(line.lstrip("-•* ").strip(), color=BLUE)]}})
+            b.append({"object": "block", "type": "bulleted_list_item",
+                      "bulleted_list_item": {"rich_text": [_t(line.lstrip("-•* ").strip())]}})
         else:
-            # skip a trailing CTA echoed in the body (we render the button below)
-            if cta and line.lower().rstrip(" →").endswith(cta.lower().rstrip(" →")):
-                continue
-            blocks.append({"object": "block", "type": "paragraph",
-                           "paragraph": {"rich_text": [_t(line)]}})
-    # CTA "button"
-    blocks.append({"object": "block", "type": "callout", "callout": {
-        "rich_text": [_t("📅  " + (cta or "Book a Demo") + "  →", bold=True, color="blue",
-                         link=cta_url)],
-        "icon": {"type": "emoji", "emoji": "👉"}, "color": "blue_background"}})
-    # footer
-    blocks.append({"object": "block", "type": "divider", "divider": {}})
-    blocks.append({"object": "block", "type": "paragraph",
-                   "paragraph": {"rich_text": [_t(FOOTER, color="gray")]}})
-    return blocks
+            b.append({"object": "block", "type": "paragraph",
+                      "paragraph": {"rich_text": [_t(line)]}})
+    b.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
+        _t("CTA: ", bold=True, color="gray"), _t(cta or "", color="gray"),
+        _t(f"     ·  Suggested feature: {feature}", color="gray")]}})
+    # mockup
+    b.append({"object": "block", "type": "divider", "divider": {}})
+    b.append({"object": "block", "type": "heading_3",
+              "heading_3": {"rich_text": [_t("📧  Mockup — roughly how it'll look in HubSpot")]}})
+    if image_fid:
+        b.append({"object": "block", "type": "image",
+                  "image": {"type": "file_upload", "file_upload": {"id": image_fid}}})
+    else:
+        b.append({"object": "block", "type": "callout", "callout": {
+            "rich_text": [_t("(mockup image unavailable for this run)", color="gray")],
+            "icon": {"type": "emoji", "emoji": "🖼"}, "color": "gray_background"}})
+    return b
 
 
-def create_draft(*, subject, preview, body, cta, audience, engagement, channel, goal,
-                 feature, subject_formula, send_date=None, status="Ready for Review",
-                 notes="", cta_url=None, email=None):
-    """Create a draft row whose title leads with Audience · Engagement and whose
-    page body is laid out to look like the real email."""
-    title = f"{audience} · {engagement} — {subject}"
+def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
+                 feature, send_date=None, goal=None, subject_formula=None,
+                 status=None, notes=None, cta_url=None, email=None):
+    """Create a lean draft row. Title = 'Audience Engagement — Week of <Mon>'."""
+    wk = _week_of(send_date) if send_date else None
+    title = f"{audience} {engagement}" + (f" — Week of {wk}" if wk else "")
+
+    # render + upload the mockup image (best-effort)
+    image_fid = None
+    try:
+        import mockup
+        image_fid = mockup.make_mockup_upload(headline=subject,
+            body_lines=(body or "").split("\n"), cta=cta or "Book a Demo")
+    except Exception as e:
+        print("mockup skipped:", e)
 
     def sel(v): return {"select": {"name": v}} if v else {"select": None}
-    def rt(v): return {"rich_text": [{"type": "text", "text": {"content": (v or "")[:1990]}}]}
-
     props = {
         "Email": {"title": [{"type": "text", "text": {"content": title[:200]}}]},
-        "Status": sel(status), "Audience": sel(audience), "Engagement": sel(engagement),
-        "Channel": sel(channel), "Goal": sel(goal), "Feature": sel(feature),
-        "Subject Formula": sel(subject_formula),
-        "Subject Line": rt(subject), "Preview Text": rt(preview), "CTA": rt(cta),
-        "Body": rt(body), "Notes": rt(notes),
+        "Audience": sel(audience), "Engagement": sel(engagement),
+        "Channel": sel(channel), "Feature": sel(feature),
+        "Approved": {"checkbox": False}, "Done": {"checkbox": False},
     }
     if send_date:
         props["Send Date"] = {"date": {"start": send_date}}
     page = _call("POST", "/pages", {
         "parent": {"database_id": CALENDAR_DB_ID}, "properties": props,
-        "children": _email_blocks(subject=subject, preview=preview, body=body,
-                                  cta=cta, cta_url=cta_url),
-    })
+        "children": _draft_page_blocks(subject=subject, preview=preview, body=body,
+                                       cta=cta, feature=feature, image_fid=image_fid)})
     return page.get("url", page.get("id"))

@@ -18,5 +18,5 @@ rows = notion.get_calendar_rows()
 if not rows:
     print("(none yet)")
 for r in rows:
-    print(f"- [{r['status']}] {r['audience']}/{r['engagement']} | {r['send_date']} | "
-          f"{r['email']} | subj: {r['subject']}")
+    flags = ("approved" if r["approved"] else "draft") + (", done" if r["done"] else "")
+    print(f"- [{flags}] {r['audience']} / {r['engagement']} | {r['send_date']} | {r['name']}")

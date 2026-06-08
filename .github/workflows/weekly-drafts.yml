@@ -21,6 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare mockup renderer (Chrome + Pillow)
+        run: |
+          pip install --quiet pillow || pip3 install --quiet pillow || true
+          google-chrome --version || sudo apt-get update -y && sudo apt-get install -y google-chrome-stable || true
+
       - uses: anthropics/claude-code-action@v1
         with:
           # OAuth subscription token (from `claude setup-token`) — NOT an API key.
@@ -34,3 +39,4 @@ jobs:
         env:
           # Notion integration token with access to the Email Machine pages.
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CHROME_BIN: google-chrome   # used to render the email mockup image
