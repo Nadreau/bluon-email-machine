@@ -145,7 +145,7 @@ def _draft_page_blocks(*, subject, preview, body, cta, feature, image_fid):
                   "image": {"type": "file_upload", "file_upload": {"id": image_fid}}})
     else:
         b.append({"object": "block", "type": "callout", "callout": {
-            "rich_text": [_t("(mockup image unavailable for this run)", color="gray")],
+            "rich_text": [_t("mockup rendering — refresh in a moment", color="gray")],
             "icon": {"type": "emoji", "emoji": "🖼"}, "color": "gray_background"}})
     return b
 
@@ -156,15 +156,9 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
     """Create a lean draft row. Title = 'Audience Engagement — Week of <Mon>'."""
     wk = _week_of(send_date) if send_date else None
     title = f"{audience} {engagement}" + (f" — Week of {wk}" if wk else "")
-
-    # render + upload the mockup image (best-effort)
+    # Mockup is rendered by the dedicated attach_mockups step (decoupled so a
+    # render hiccup never blocks the draft). Page ships with a pending placeholder.
     image_fid = None
-    try:
-        import mockup
-        image_fid = mockup.make_mockup_upload(headline=subject,
-            body_lines=(body or "").split("\n"), cta=cta or "Book a Demo")
-    except Exception as e:
-        print("mockup skipped:", e)
 
     def sel(v): return {"select": {"name": v}} if v else {"select": None}
     props = {
