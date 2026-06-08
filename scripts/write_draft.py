@@ -16,11 +16,11 @@ Example:
 import argparse, notion
 
 p = argparse.ArgumentParser()
-p.add_argument("--email", required=True)
 p.add_argument("--subject", required=True)
 p.add_argument("--preview", default="")
 p.add_argument("--body", required=True)
 p.add_argument("--cta", required=True)
+p.add_argument("--cta-url", dest="cta_url", default=None, help="book-a-meeting URL")
 p.add_argument("--audience", required=True)
 p.add_argument("--engagement", required=True, choices=["Engaged", "Unengaged"])
 p.add_argument("--channel", required=True, choices=["HubSpot", "Anevvo"])
@@ -33,7 +33,7 @@ p.add_argument("--notes", default="Auto-drafted by Email Machine. For Pete revie
 a = p.parse_args()
 
 url = notion.create_draft(
-    email=a.email, subject=a.subject, preview=a.preview, body=a.body, cta=a.cta,
+    subject=a.subject, preview=a.preview, body=a.body, cta=a.cta, cta_url=a.cta_url,
     audience=a.audience, engagement=a.engagement, channel=a.channel, goal=a.goal,
     feature=a.feature, subject_formula=a.subject_formula, send_date=a.send_date,
     status=a.status, notes=a.notes)
