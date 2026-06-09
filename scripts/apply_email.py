@@ -32,6 +32,14 @@ def main():
         notion.update_block_text(s["cta_id"], "callout",
                                  [notion._t("📅  " + a.cta + "  →", bold=True, color=notion.BLUE)])
 
+    if a.body is not None and not s["hero_anchor_id"]:
+        # SAFETY: page isn't in the new stylized format (no anchor to insert after).
+        # Never archive the body if we can't put the new one back — skip the body
+        # edit and just re-render so we don't strip content.
+        print("WARN: no stylized anchor on this page — skipping body edit (run migration to upgrade format)")
+        regenerate.regen_page(pid, clear_flag=True)
+        return
+
     if a.body is not None:
         # build fresh body blocks (blue bullets, like the rest of the email)
         new_blocks = []
