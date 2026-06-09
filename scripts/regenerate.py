@@ -49,7 +49,17 @@ def regen_page(page_id, clear_flag=False):
 def main():
     arg = sys.argv[1] if len(sys.argv) > 1 else "--flagged"
     if arg == "--flagged":
-        rows = [r for r in notion.get_calendar_rows() if r["regen"]]
+        # The webhook means a box was JUST checked; Notion's query index can lag
+        # a few seconds behind that write, so retry a couple times before giving up.
+        import time
+        rows = []
+        for attempt in range(4):
+            rows = [r for r in notion.get_calendar_rows() if r["regen"]]
+            if rows:
+                break
+            if attempt < 3:
+                print(f"none flagged yet (attempt {attempt+1}) — waiting for Notion to catch up…")
+                time.sleep(12)
         print(f"{len(rows)} row(s) flagged for regenerate")
         for r in rows:
             regen_page(r["id"], clear_flag=True)
