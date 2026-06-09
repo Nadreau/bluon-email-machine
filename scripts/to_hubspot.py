@@ -13,8 +13,12 @@ native Video module (how Bluon builds them).
   python to_hubspot.py <PAGE_ID>   # one row
   python to_hubspot.py --ready     # all rows that are Ready to Go but not yet drafted
 """
-import os, sys, json, html, urllib.request, urllib.error
+import os, sys, json, html, re, time, urllib.request, urllib.error
 import notion
+
+IMG_MODULE = "module_16043839347002"   # the template's hero image module
+YOUTUBE = re.compile(r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})")
+HERO_WORDS = ("video", "graphic", "image", "hero", "thumbnail", "coming", "media")
 
 HS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip() or open(
     os.path.expanduser("~/.config/hubspot/api_key")).read().strip()
@@ -57,6 +61,41 @@ def body_html(info):
     return "".join(out)
 
 
+def host_image(url, name="hero"):
+    """Import a (Notion-hosted, expiring) image into HubSpot files → permanent url."""
+    try:
+        task = hs("POST", "/files/v3/files/import-from-url/async",
+                  {"url": url, "folderPath": "/email-machine", "access": "PUBLIC_INDEXABLE",
+                   "name": name, "overwrite": False, "duplicateValidationStrategy": "NONE",
+                   "duplicateValidationScope": "ENTIRE_PORTAL"})
+        tid = task["id"]
+        for _ in range(15):
+            st = hs("GET", f"/files/v3/files/import-from-url/async/tasks/{tid}/status")
+            if st.get("status") == "COMPLETE":
+                return (st.get("result") or {}).get("url")
+            time.sleep(2)
+    except Exception as e:
+        print("host_image failed:", e)
+    return None
+
+
+def detect_hero(info):
+    """What hero (if any) does the Notion draft indicate?
+    Returns (img_src, link, stub): a YouTube video → thumbnail+link; a pasted
+    image → hosted src; a 'coming' note → empty stub; nothing → (None,None,None)."""
+    text = " ".join(info["body_lines"] + info["style_notes"])
+    m = YOUTUBE.search(text)
+    if m:
+        vid = m.group(1)
+        return (f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
+                f"https://www.youtube.com/watch?v={vid}", False)
+    if info.get("hero_url"):
+        return (info["hero_url"], "", False)        # pasted image (host in make_draft)
+    if any(w in text.lower() for w in HERO_WORDS):
+        return ("", "", True)          # an image/video is coming → empty stub
+    return (None, None, None)          # no hero
+
+
 def make_draft(page_id):
     info = notion.parse_draft_page(page_id)
     pr = notion._call("GET", f"/pages/{page_id}")["properties"]
@@ -67,23 +106,43 @@ def make_draft(page_id):
     eid = clone["id"]
 
     content = hs("GET", f"/marketing/v3/emails/{eid}")["content"]
+    rt = content["widgets"]["primary_rich_text_module"]   # keep full module, change only html
+    rt.setdefault("body", {})["html"] = body_html(info)
+    widgets_patch = {"primary_rich_text_module": rt}
+    keep = ["primary_rich_text_module", "footer_module"]
+
+    # hero: place the image module at the top — filled (video thumbnail / pasted
+    # image) or as an empty stub if the draft says one is coming.
+    src, link, stub = detect_hero(info)
+    hero_kind = "no hero"
+    if src is not None and IMG_MODULE in content["widgets"]:
+        if src:  # host it in HubSpot so the editor + email actually display it
+            hosted = host_image(src, "hero")
+            if hosted:
+                src = hosted
+        imgmod = content["widgets"][IMG_MODULE]
+        imgmod.setdefault("body", {})["img"] = {"src": src, "alt": info["subject"], "width": 600}
+        if link:
+            imgmod["body"]["link"] = link
+        widgets_patch[IMG_MODULE] = imgmod
+        keep = [IMG_MODULE, "primary_rich_text_module", "footer_module"]
+        hero_kind = ("video thumbnail" if link and "youtube" in link
+                     else "image" if src else "empty stub")
+
     flex = content.get("flexAreas", {})
     try:
         for sec in flex.get("main", {}).get("sections", []):
             for col in sec.get("columns", []):
-                col["widgets"] = [w for w in col.get("widgets", [])
-                                  if w in ("primary_rich_text_module", "footer_module")]
+                col["widgets"] = keep
     except Exception:
         flex = None
 
-    rt = content["widgets"]["primary_rich_text_module"]   # keep full module, change only html
-    rt.setdefault("body", {})["html"] = body_html(info)
-
     patch = {"subject": info["subject"], "name": name,
-             "content": {"widgets": {"primary_rich_text_module": rt}}}
+             "content": {"widgets": widgets_patch}}
     if flex:
         patch["content"]["flexAreas"] = flex
     hs("PATCH", f"/marketing/v3/emails/{eid}", patch)
+    print("  hero:", hero_kind)
 
     url = f"https://app.hubspot.com/email/{PORTAL}/edit/{eid}/content"
     notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Hubspot Email": {"url": url}}})
