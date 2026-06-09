@@ -41,8 +41,8 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           CHROME_BIN: google-chrome   # used to render the email mockup image
 
-      - name: Render + attach mockups
-        run: python scripts/attach_mockups.py
+      - name: Render mockups for new drafts
+        run: python scripts/regenerate.py --fill
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           CHROME_BIN: google-chrome

@@ -1,0 +1,30 @@
+name: Email Machine — Regenerate Mockup
+
+# Fired by Notion when someone presses the "Regenerate Mockup" button (which
+# checks "Regen requested"). Re-renders the mockup for every flagged row from
+# its current edited copy + (( )) styling notes + pasted hero image, then clears
+# the flag. Triggered via repository_dispatch (event_type: regen) from a Notion
+# automation webhook; also runnable manually.
+
+on:
+  repository_dispatch:
+    types: [regen]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  regen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare renderer
+        run: |
+          pip install --quiet pillow || pip3 install --quiet pillow || true
+          google-chrome --version || true
+      - name: Regenerate flagged mockups
+        run: python scripts/regenerate.py --flagged
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CHROME_BIN: google-chrome
