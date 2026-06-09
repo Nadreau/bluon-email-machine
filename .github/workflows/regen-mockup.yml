@@ -1,10 +1,10 @@
 name: Email Machine — Regenerate Mockup
 
-# Fired by Notion when someone presses the "Regenerate Mockup" button (which
-# checks "Regen requested"). Re-renders the mockup for every flagged row from
-# its current edited copy + (( )) styling notes + pasted hero image, then clears
-# the flag. Triggered via repository_dispatch (event_type: regen) from a Notion
-# automation webhook; also runnable manually.
+# Fired by Notion when someone presses the "Regenerate Mockup" button (relay →
+# repository_dispatch with the page id). If the draft has instruction notes
+# (e.g. ((add one more bullet)), or anything in the Formatting & media notes),
+# an AI step applies them to the email copy and re-renders. If it's just direct
+# copy edits (no notes), a fast deterministic re-render runs — no AI, instant.
 
 on:
   repository_dispatch:
@@ -13,21 +13,64 @@ on:
 
 permissions:
   contents: read
+  id-token: write   # claude-code-action
 
 jobs:
   regen:
     runs-on: ubuntu-latest
+    env:
+      PAGE_ID: ${{ github.event.client_payload.page_id }}
     steps:
       - uses: actions/checkout@v4
       - name: Prepare renderer
         run: |
           pip install --quiet pillow || pip3 install --quiet pillow || true
           google-chrome --version || true
-      - name: Regenerate the mockup
+
+      - name: Are there notes to act on?
+        id: check
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+        run: |
+          if [ -n "$PAGE_ID" ] && python scripts/has_notes.py "$PAGE_ID"; then
+            echo "ai=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ai=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- Notes present: AI applies them to the email, then re-renders ---
+      - name: AI — apply notes + re-render
+        if: steps.check.outputs.ai == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            A reviewer (Pete/Tanner) left edits and/or notes on ONE Bluon email
+            draft. The Notion page id is in the $PAGE_ID environment variable.
+
+            1. Read the current state:  python scripts/page_state.py "$PAGE_ID"
+            2. Apply the INSTRUCTION NOTES to the email copy — add/rewrite/reorder
+               bullets, tighten or reword copy, change the headline or CTA as the
+               notes ask — while KEEPING the reviewer's direct copy edits. Stay in
+               Bluon's voice: positive, trade-native, one feature, one clear CTA.
+            3. Write the result back AND re-render the mockup with ONE command:
+               python scripts/apply_email.py "$PAGE_ID" --subject "..." --cta "..." --body $'line\n- bullet\n- bullet\n\nproof'
+               (Pass the FULL new body; lines starting with - become bullets.)
+            4. Briefly report what you changed. Never send any email.
+          claude_args: |
+            --model claude-opus-4-8
+            --allowedTools Bash
+            --max-turns 12
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           CHROME_BIN: google-chrome
-          PAGE_ID: ${{ github.event.client_payload.page_id }}
+
+      # --- No notes: just re-render the current copy, instantly ---
+      - name: Re-render (no notes)
+        if: steps.check.outputs.ai != 'true'
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CHROME_BIN: google-chrome
         run: |
           if [ -n "$PAGE_ID" ]; then
             python scripts/regenerate.py "$PAGE_ID"

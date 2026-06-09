@@ -245,3 +245,46 @@ def parse_draft_page(page_id):
     return {"subject": subject, "body_lines": body, "cta": cta,
             "style_notes": style_notes + notes, "hero_url": hero_url,
             "mockup_old_ids": mockup_old_ids}
+
+
+def parse_structure(page_id):
+    """Return block IDs by role so an editor can update copy in place."""
+    blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
+    section = "email"
+    out = {"subject_id": None, "hero_anchor_id": None, "cta_id": None,
+           "body_ids": [], "note_ids": [], "mockup_old_ids": []}
+    for b in blocks:
+        t = b["type"]; txt = _block_text(b); bid = b["id"]
+        if t == "heading_3" and NOTES_HEADING in txt:
+            section = "notes"; continue
+        if t == "heading_3" and MOCKUP_HEADING in txt:
+            section = "mockup"; continue
+        if t == "heading_2" and out["subject_id"] is None:
+            out["subject_id"] = bid; continue
+        if t == "callout" and txt.startswith(HERO_HINT):
+            out["hero_anchor_id"] = bid; continue
+        if section == "mockup" and t in ("image", "callout"):
+            out["mockup_old_ids"].append(bid); continue
+        if section == "email":
+            if t == "image":
+                out["hero_anchor_id"] = bid          # pasted hero = insert body after it
+            elif t == "callout" and ("📅" in txt or "→" in txt):
+                out["cta_id"] = bid
+            elif t == "paragraph" and txt.startswith("Preview:"):
+                pass
+            elif t == "paragraph" and "Bluon, Inc." in txt:
+                pass
+            elif t in ("paragraph", "bulleted_list_item"):
+                out["body_ids"].append(bid)
+        elif section == "notes":
+            if txt and not txt.startswith("e.g."):
+                out["note_ids"].append(bid)
+    return out
+
+
+def update_block_text(block_id, block_type, rich_text):
+    _call("PATCH", f"/blocks/{block_id}", {block_type: {"rich_text": rich_text}})
+
+
+def insert_after(page_id, after_id, children):
+    _call("PATCH", f"/blocks/{page_id}/children", {"children": children, "after": after_id})
