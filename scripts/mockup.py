@@ -153,7 +153,7 @@ def render_png(html_str, out_png):
         diff = ImageChops.difference(im, bg)
         bbox = diff.getbbox()
         if bbox:
-            im.crop((0, 0, im.size[0], min(im.size[1], bbox[3] + 40))).save(out_png)
+            im.crop((0, 0, im.size[0], min(im.size[1], bbox[3] + 12))).save(out_png)
     except Exception:
         pass
     return out_png
