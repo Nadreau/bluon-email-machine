@@ -159,7 +159,7 @@ def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None):
 
 def _week_of(send_date):
     try:
-        d = datetime.date.fromisoformat(send_date)
+        d = datetime.date.fromisoformat(send_date[:10])  # tolerate datetime (YYYY-MM-DDThh:mm)
         return (d - datetime.timedelta(days=d.weekday())).strftime("%b %-d")
     except Exception:
         return None
