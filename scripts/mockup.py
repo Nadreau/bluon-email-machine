@@ -79,10 +79,12 @@ def build_html(*, headline, body_lines, cta):
 def render_png(html_str, out_png):
     with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as f:
         f.write(html_str); html_path = f.name
-    subprocess.run([_chrome(), "--headless=new", "--disable-gpu", "--no-sandbox",
-                    "--disable-dev-shm-usage", "--disable-software-rasterizer",
-                    "--hide-scrollbars", "--force-device-scale-factor=2",
-                    "--window-size=640,1700", f"--screenshot={out_png}",
+    profile = tempfile.mkdtemp(prefix="chrome-mockup-")
+    subprocess.run([_chrome(), "--headless", "--disable-gpu", "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    f"--user-data-dir={profile}",  # own profile so it doesn't lock on a running Chrome
+                    "--hide-scrollbars",
+                    "--window-size=620,1600", f"--screenshot={out_png}",
                     "file://" + html_path], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
     # auto-crop trailing background
