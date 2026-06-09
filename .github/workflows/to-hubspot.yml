@@ -29,5 +29,8 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
         run: |
-          if [ -z "$PAGE_ID" ]; then echo "no page id"; exit 1; fi
-          python scripts/to_hubspot.py "$PAGE_ID"
+          if [ -n "$PAGE_ID" ]; then
+            python scripts/to_hubspot.py "$PAGE_ID"
+          else
+            python scripts/to_hubspot.py --ready
+          fi
