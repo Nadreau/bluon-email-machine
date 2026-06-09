@@ -67,8 +67,11 @@ def main():
                {"id": TEMPLATE_EMAIL_ID, "cloneName": name or "Email Machine draft"})
     eid = clone["id"]
 
-    # 2) trim the cloned layout to just our rich-text + footer, then fill it
-    flex = hs("GET", f"/marketing/v3/emails/{eid}")["content"].get("flexAreas", {})
+    # 2) trim the cloned layout to just our rich-text + footer, then fill it.
+    #    IMPORTANT: change ONLY body.html on the existing module — preserve
+    #    type/path(@hubspot/rich_text)/module_id/order so HubSpot can render it.
+    content = hs("GET", f"/marketing/v3/emails/{eid}")["content"]
+    flex = content.get("flexAreas", {})
     try:
         for sec in flex.get("main", {}).get("sections", []):
             for col in sec.get("columns", []):
@@ -77,8 +80,11 @@ def main():
     except Exception:
         flex = None
 
+    rt = content["widgets"]["primary_rich_text_module"]   # full module object
+    rt.setdefault("body", {})["html"] = body_html(info)
+
     patch = {"subject": info["subject"], "name": name,
-             "content": {"widgets": {"primary_rich_text_module": {"body": {"html": body_html(info)}}}}}
+             "content": {"widgets": {"primary_rich_text_module": rt}}}
     if flex:
         patch["content"]["flexAreas"] = flex
     hs("PATCH", f"/marketing/v3/emails/{eid}", patch)
