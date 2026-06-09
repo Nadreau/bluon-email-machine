@@ -100,18 +100,19 @@ def upload_png(png_path, name="bluon-hero"):
         return None
 
 
-def resolve_hero(info):
+def resolve_hero(info, uniq):
     """Return (img_src, link) for the hero, hosting whatever's needed:
     video → hosted thumbnail + link; pasted image → hosted image; else → the
-    rendered Bluon banner (default placeholder, replaceable)."""
+    rendered Bluon banner (default placeholder, replaceable). `uniq` keeps each
+    email's hosted banner a distinct file."""
     kind, src, link = notion.detect_hero(info)
     if kind in ("video", "image"):
-        return (host_image(src, "hero") or src, link)
+        return (host_image(src, f"hero-{uniq}") or src, link)
     # default → render the branded Bluon banner with this email's headline + host it
     try:
         png = mockup.render_png(mockup.hero_banner_html(info["subject"]),
                                 tempfile.mktemp(suffix=".png"))
-        return (upload_png(png, "bluon-hero"), "")
+        return (upload_png(png, f"bluon-hero-{uniq}"), "")
     except Exception as e:
         print("banner render failed:", e)
         return (None, "")
@@ -134,7 +135,7 @@ def make_draft(page_id):
 
     # hero: always place an image module at the top — real video thumbnail / pasted
     # image when identified, otherwise the branded Bluon banner (replaceable).
-    src, link = resolve_hero(info)
+    src, link = resolve_hero(info, eid)
     hero_kind = "default Bluon banner" if not link and "youtube" not in str(link) else "media"
     if src and IMG_MODULE in content["widgets"]:
         imgmod = content["widgets"][IMG_MODULE]
