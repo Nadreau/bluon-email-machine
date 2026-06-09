@@ -29,17 +29,16 @@ Each row is intentionally lean: the database stores only Audience, Engagement, C
    WED=$(date -d "next monday +2 day" +%F)   # Wednesday
    THU=$(date -d "next monday +3 day" +%F)   # Thursday
    ```
-   **Why this cadence:** B2B/HVAC inboxes open best Tue–Thu. We deliberately **skip Monday** (weekend backlog buries us) and **Friday** (contractors are wrapping the week / heading to the field). It's peak cooling season (June) — owners are slammed — so we hit them early when they triage email. Each day carries two sends: one **Engaged** demo push and one **Unengaged** re-engagement, to different audiences (no list overlap), which keeps volume even and measurement clean.
-   - **Engaged** emails send at **08:00** (start of workday — decision-makers triaging, can book a demo during business hours).
-   - **Unengaged** emails send at **10:30** (mid-morning second inbox check — re-engagement copy stands out when the rush settles).
-   Map each email to this exact slot (times in ET, `-04:00`):
-   | Day | 08:00 (Engaged · Demo) | 10:30 (Unengaged · Open) |
-   |-----|------------------------|--------------------------|
-   | **Tue** | ServiceTitan Engaged | Residential Unengaged |
-   | **Wed** | Commercial Engaged | ServiceTitan Unengaged |
-   | **Thu** | Residential Engaged | Commercial Unengaged |
-   Pass the slot as a datetime to `--send-date`, e.g. `--send-date "${TUE}T08:00:00-04:00"` for ServiceTitan Engaged, `--send-date "${TUE}T10:30:00-04:00"` for Residential Unengaged, and so on down the table.
-   (ServiceTitan leads the week on Tuesday — highest-intent segment, best day. Don't deviate from this map unless told otherwise.)
+   **Why this cadence:** B2B/HVAC inboxes open best Tue–Thu. We deliberately **skip Monday** (weekend backlog buries us) and **Friday** (contractors are wrapping the week / heading to the field). It's peak cooling season (June) — owners are slammed — so we hit them early when they triage email.
+
+   **Group by audience — one audience per day, both versions together at 08:00.** Engaged and Unengaged are completely separate, non-overlapping lists, so there's no over-mailing risk and no reason to space them apart in time. Each morning we send that day's audience to BOTH its Engaged list (HubSpot) and its Unengaged list (Anevvo) — frequently the **same core email with just a different CTA** (Engaged → "Book a Demo"; Unengaged → soft "Take a peek"). They can also differ when there's a reason; either is fine. Working one audience per day keeps it simple and clean.
+   | Day | Audience (both versions · 08:00) |
+   |-----|----------------------------------|
+   | **Tue** | ServiceTitan — Engaged (HubSpot) + Unengaged (Anevvo) |
+   | **Wed** | Commercial — Engaged + Unengaged |
+   | **Thu** | Residential — Engaged + Unengaged |
+   Both that audience's emails get the same datetime, e.g. ServiceTitan: `--send-date "${TUE}T08:00:00-04:00"` for both Engaged and Unengaged; Commercial → `${WED}T08:00:00-04:00`; Residential → `${THU}T08:00:00-04:00`.
+   (ServiceTitan leads the week on Tuesday — highest-intent audience, best day. Don't deviate from this map unless told otherwise.)
 
 4. **Generate each draft** strictly per the guide:
    - Engaged → lead with ONE feature + use case; CTA = "Book a Demo"; positive, concrete.
