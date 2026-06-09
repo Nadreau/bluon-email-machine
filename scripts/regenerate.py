@@ -73,7 +73,12 @@ def main():
                 n += 1
         print(f"filled {n} mockups")
     else:
-        regen_page(arg, clear_flag=True)
+        # a specific page id from the webhook — validate it's a Notion UUID
+        import re
+        pid = arg.strip().replace("-", "")
+        if not re.fullmatch(r"[0-9a-fA-F]{32}", pid):
+            print("ignoring non-UUID page id:", arg[:40]); return
+        regen_page(arg.strip(), clear_flag=True)
 
 
 if __name__ == "__main__":

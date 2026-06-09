@@ -23,8 +23,14 @@ jobs:
         run: |
           pip install --quiet pillow || pip3 install --quiet pillow || true
           google-chrome --version || true
-      - name: Regenerate flagged mockups
-        run: python scripts/regenerate.py --flagged
+      - name: Regenerate the mockup
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           CHROME_BIN: google-chrome
+          PAGE_ID: ${{ github.event.client_payload.page_id }}
+        run: |
+          if [ -n "$PAGE_ID" ]; then
+            python scripts/regenerate.py "$PAGE_ID"
+          else
+            python scripts/regenerate.py --flagged
+          fi
