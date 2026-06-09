@@ -1,0 +1,33 @@
+name: Email Machine — Draft to HubSpot
+
+# Fired when a reviewer checks "Ready to Go" (Notion automation → relay →
+# repository_dispatch type "hubspot", carrying the page id). Clones a Bluon
+# template email, fills it with this row's subject + body, and writes the
+# HubSpot editor link back into the row's "Hubspot Email" property.
+
+on:
+  repository_dispatch:
+    types: [hubspot]
+  workflow_dispatch:
+    inputs:
+      page_id:
+        description: Notion page id
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    env:
+      PAGE_ID: ${{ github.event.client_payload.page_id || github.event.inputs.page_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create HubSpot draft
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: |
+          if [ -z "$PAGE_ID" ]; then echo "no page id"; exit 1; fi
+          python scripts/to_hubspot.py "$PAGE_ID"
