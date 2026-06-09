@@ -140,6 +140,7 @@ def make_draft(page_id):
     if src and IMG_MODULE in content["widgets"]:
         imgmod = content["widgets"][IMG_MODULE]
         imgmod.setdefault("body", {})["img"] = {"src": src, "alt": info["subject"], "width": 600}
+        imgmod["body"]["alignment"] = "center"
         if link:
             imgmod["body"]["link"] = link
             hero_kind = "video thumbnail"
