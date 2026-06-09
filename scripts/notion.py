@@ -247,6 +247,24 @@ def parse_draft_page(page_id):
             "mockup_old_ids": mockup_old_ids}
 
 
+YOUTUBE_RE = re.compile(r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})")
+
+
+def detect_hero(info):
+    """Decide the hero for a draft from its Notion content. Returns (kind, src, link):
+    a YouTube link → ('video', thumbnail, watch_url); a pasted image → ('image', url, '');
+    nothing identified → ('default', None, '') = the branded Bluon banner."""
+    text = " ".join(info.get("body_lines", []) + info.get("style_notes", []))
+    m = YOUTUBE_RE.search(text)
+    if m:
+        vid = m.group(1)
+        return ("video", f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
+                f"https://www.youtube.com/watch?v={vid}")
+    if info.get("hero_url"):
+        return ("image", info["hero_url"], "")
+    return ("default", None, "")
+
+
 def parse_structure(page_id):
     """Return block IDs by role so an editor can update copy in place."""
     blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]

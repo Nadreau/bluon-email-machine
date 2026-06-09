@@ -24,10 +24,15 @@ jobs:
       PAGE_ID: ${{ github.event.client_payload.page_id || github.event.inputs.page_id }}
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare renderer (for the default Bluon banner)
+        run: |
+          pip install --quiet pillow || pip3 install --quiet pillow || true
+          google-chrome --version || true
       - name: Create HubSpot draft
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          CHROME_BIN: google-chrome
         run: |
           if [ -n "$PAGE_ID" ]; then
             python scripts/to_hubspot.py "$PAGE_ID"

@@ -13,12 +13,10 @@ native Video module (how Bluon builds them).
   python to_hubspot.py <PAGE_ID>   # one row
   python to_hubspot.py --ready     # all rows that are Ready to Go but not yet drafted
 """
-import os, sys, json, html, re, time, urllib.request, urllib.error
-import notion
+import os, sys, json, html, time, tempfile, urllib.request, urllib.error
+import notion, mockup
 
 IMG_MODULE = "module_16043839347002"   # the template's hero image module
-YOUTUBE = re.compile(r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})")
-HERO_WORDS = ("video", "graphic", "image", "hero", "thumbnail", "coming", "media")
 
 HS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip() or open(
     os.path.expanduser("~/.config/hubspot/api_key")).read().strip()
@@ -79,21 +77,44 @@ def host_image(url, name="hero"):
     return None
 
 
-def detect_hero(info):
-    """What hero (if any) does the Notion draft indicate?
-    Returns (img_src, link, stub): a YouTube video → thumbnail+link; a pasted
-    image → hosted src; a 'coming' note → empty stub; nothing → (None,None,None)."""
-    text = " ".join(info["body_lines"] + info["style_notes"])
-    m = YOUTUBE.search(text)
-    if m:
-        vid = m.group(1)
-        return (f"https://img.youtube.com/vi/{vid}/hqdefault.jpg",
-                f"https://www.youtube.com/watch?v={vid}", False)
-    if info.get("hero_url"):
-        return (info["hero_url"], "", False)        # pasted image (host in make_draft)
-    if any(w in text.lower() for w in HERO_WORDS):
-        return ("", "", True)          # an image/video is coming → empty stub
-    return (None, None, None)          # no hero
+def upload_png(png_path, name="bluon-hero"):
+    """Upload a local PNG to HubSpot Files → hosted url (for the rendered banner)."""
+    boundary = "----bluonhero88"
+    fields = {"folderPath": "/email-machine",
+              "options": json.dumps({"access": "PUBLIC_INDEXABLE", "overwrite": True})}
+    body = bytearray()
+    for k, v in fields.items():
+        body += f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+    body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+             f'filename="{name}.png"\r\nContent-Type: image/png\r\n\r\n').encode()
+    body += open(png_path, "rb").read()
+    body += f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request("https://api.hubapi.com/files/v3/files", data=bytes(body),
+        method="POST", headers={"Authorization": f"Bearer {HS_TOKEN}",
+                                "Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=90) as r:
+            return json.load(r).get("url")
+    except Exception as e:
+        print("upload_png failed:", e)
+        return None
+
+
+def resolve_hero(info):
+    """Return (img_src, link) for the hero, hosting whatever's needed:
+    video → hosted thumbnail + link; pasted image → hosted image; else → the
+    rendered Bluon banner (default placeholder, replaceable)."""
+    kind, src, link = notion.detect_hero(info)
+    if kind in ("video", "image"):
+        return (host_image(src, "hero") or src, link)
+    # default → render the branded Bluon banner with this email's headline + host it
+    try:
+        png = mockup.render_png(mockup.hero_banner_html(info["subject"]),
+                                tempfile.mktemp(suffix=".png"))
+        return (upload_png(png, "bluon-hero"), "")
+    except Exception as e:
+        print("banner render failed:", e)
+        return (None, "")
 
 
 def make_draft(page_id):
@@ -111,23 +132,18 @@ def make_draft(page_id):
     widgets_patch = {"primary_rich_text_module": rt}
     keep = ["primary_rich_text_module", "footer_module"]
 
-    # hero: place the image module at the top — filled (video thumbnail / pasted
-    # image) or as an empty stub if the draft says one is coming.
-    src, link, stub = detect_hero(info)
-    hero_kind = "no hero"
-    if src is not None and IMG_MODULE in content["widgets"]:
-        if src:  # host it in HubSpot so the editor + email actually display it
-            hosted = host_image(src, "hero")
-            if hosted:
-                src = hosted
+    # hero: always place an image module at the top — real video thumbnail / pasted
+    # image when identified, otherwise the branded Bluon banner (replaceable).
+    src, link = resolve_hero(info)
+    hero_kind = "default Bluon banner" if not link and "youtube" not in str(link) else "media"
+    if src and IMG_MODULE in content["widgets"]:
         imgmod = content["widgets"][IMG_MODULE]
         imgmod.setdefault("body", {})["img"] = {"src": src, "alt": info["subject"], "width": 600}
         if link:
             imgmod["body"]["link"] = link
+            hero_kind = "video thumbnail"
         widgets_patch[IMG_MODULE] = imgmod
         keep = [IMG_MODULE, "primary_rich_text_module", "footer_module"]
-        hero_kind = ("video thumbnail" if link and "youtube" in link
-                     else "image" if src else "empty stub")
 
     flex = content.get("flexAreas", {})
     try:

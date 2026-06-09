@@ -91,6 +91,22 @@ def inner_email_html(headline, body_lines, cta, hero_b64=None,
         f"{button}")
 
 
+def hero_banner_html(headline):
+    """Standalone Bluon gradient banner (the mockup's default hero) for rendering
+    a branded placeholder image when no real graphic/video is supplied."""
+    return f"""<!doctype html><html><head><meta charset='utf-8'></head>
+<body style="margin:0;background:#ffffff;font-family:Arial,Helvetica,sans-serif">
+  <div style="width:600px">
+    <table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>
+    <td align='center' style='background:linear-gradient(135deg,#2f6df6,#23496d);background-color:#2f6df6;padding:60px 32px'>
+      <div style='color:#ffffff;font-size:25px;font-weight:800;line-height:1.15'>{html.escape(headline)}</div>
+      <div style='margin-top:22px'><span style='display:inline-block;background:#e53935;color:#ffffff;
+        border-radius:12px;padding:8px 20px;font-size:26px'>&#9654;</span></div>
+    </td></tr></table>
+  </div>
+</body></html>"""
+
+
 def build_html(*, headline, body_lines, cta, hero_b64=None):
     inner = inner_email_html(headline, body_lines, cta, hero_b64)
     return f"""<!doctype html><html><head><meta charset='utf-8'></head>
