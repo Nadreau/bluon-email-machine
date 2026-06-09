@@ -8,8 +8,8 @@ link into Notion so they can click straight through to finish/send in HubSpot.
 
   python to_hubspot.py <PAGE_ID>
 """
-import os, sys, json, html, urllib.request, urllib.error
-import notion
+import os, sys, json, urllib.request, urllib.error
+import notion, mockup
 
 HS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip() or open(
     os.path.expanduser("~/.config/hubspot/api_key")).read().strip()
@@ -27,33 +27,6 @@ def hs(method, path, body=None):
             return json.load(r)
     except urllib.error.HTTPError as e:
         raise SystemExit(f"HubSpot {method} {path} failed: {e.code} {e.read().decode()[:300]}")
-
-
-def body_html(info):
-    """Bluon-styled body for the rich-text module (template gives logo + footer)."""
-    parts = [f'<h2 style="color:#23496d;font-weight:800;font-size:22px;margin:0 0 14px">'
-             f'{html.escape(info["subject"])}</h2>']
-    bullets = []
-    for ln in info["body_lines"]:
-        ln = ln.strip()
-        if not ln:
-            continue
-        if ln[:1] in ("-", "•", "*"):
-            bullets.append(f'<li style="color:#23496d;font-weight:600;margin:6px 0">'
-                           f'{html.escape(ln.lstrip("-•* ").strip())}</li>')
-        else:
-            if bullets:
-                parts.append("<ul style='margin:14px 0'>" + "".join(bullets) + "</ul>"); bullets = []
-            parts.append(f'<p style="color:#222;font-size:15px;line-height:1.5;margin:10px 0">'
-                         f'{html.escape(ln)}</p>')
-    if bullets:
-        parts.append("<ul style='margin:14px 0'>" + "".join(bullets) + "</ul>")
-    cta = html.escape(info["cta"] or "Book a Demo")
-    parts.append('<div style="text-align:center;margin:24px 0 8px">'
-                 f'<a href="https://www.bluon.com/demo" style="background:#2f6df6;color:#fff;'
-                 f'font-weight:700;font-size:16px;padding:13px 30px;border-radius:8px;'
-                 f'text-decoration:none;display:inline-block">&#128197; {cta}</a></div>')
-    return "".join(parts)
 
 
 def main():
@@ -81,7 +54,8 @@ def main():
         flex = None
 
     rt = content["widgets"]["primary_rich_text_module"]   # full module object
-    rt.setdefault("body", {})["html"] = body_html(info)
+    rt.setdefault("body", {})["html"] = mockup.inner_email_html(
+        info["subject"], info["body_lines"], info["cta"])
 
     patch = {"subject": info["subject"], "name": name,
              "content": {"widgets": {"primary_rich_text_module": rt}}}

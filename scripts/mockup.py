@@ -45,7 +45,11 @@ def fetch_hero_b64(url):
         return None
 
 
-def build_html(*, headline, body_lines, cta, hero_b64=None):
+def inner_email_html(headline, body_lines, cta, hero_b64=None,
+                     cta_url="https://www.bluon.com/demo"):
+    """The shared Bluon email design — hero, blue headline, check-bullets, gradient
+    CTA button. Used BOTH for the rendered mockup and the HubSpot draft body so the
+    two match. Email-safe: table-based hero + bulletproof button, inline styles."""
     bullets, paras = [], []
     for ln in body_lines:
         ln = ln.strip()
@@ -55,39 +59,48 @@ def build_html(*, headline, body_lines, cta, hero_b64=None):
             bullets.append(html.escape(ln.lstrip("-•* ").strip()))
         else:
             paras.append(html.escape(ln))
-    bullets_html = ("<ul style='margin:18px 0;padding-left:0;list-style:none'>" +
-                    "".join(f"<li style=\"margin:8px 0;padding-left:26px;position:relative;"
-                            f"color:#23496d;font-weight:600\"><span style='position:absolute;left:0'>✅</span>{b}</li>"
-                            for b in bullets) + "</ul>") if bullets else ""
-    paras_html = "".join(f"<p style='margin:12px 0;color:#222;font-size:15px;line-height:1.5'>{p}</p>"
-                         for p in paras)
+    bullets_html = "".join(
+        "<p style='margin:8px 0;color:#23496d;font-weight:600;font-size:15px;line-height:1.4'>"
+        f"&#9989;&nbsp;{b}</p>" for b in bullets)
+    paras_html = "".join(
+        f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{p}</p>" for p in paras)
     if hero_b64:
-        hero = (f"<div style='margin:0 20px'><img src='{hero_b64}' "
-                f"style='width:100%;border-radius:8px;display:block'></div>")
+        hero = (f"<img src='{hero_b64}' style='width:100%;border-radius:8px;display:block;margin:0 0 4px'>")
     else:
-        hero = (f"<div style=\"margin:0 20px;height:230px;border-radius:8px;"
-                f"background:linear-gradient(135deg,#2f6df6,#23496d);position:relative;overflow:hidden\">"
-                f"<div style='position:absolute;top:24px;left:24px;right:24px;color:#fff;font-size:22px;"
-                f"font-weight:800;text-shadow:0 1px 3px rgba(0,0,0,.4);line-height:1.15'>{html.escape(headline)}</div>"
-                f"<div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:64px;"
-                f"height:64px;background:rgba(255,0,0,.85);border-radius:14px;display:flex;align-items:center;"
-                f"justify-content:center'><span style='color:#fff;font-size:26px'>&#9654;</span></div></div>")
+        hero = (
+            "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+            "style='border-radius:8px;overflow:hidden;margin:0 0 4px'><tr>"
+            "<td align='center' style='background:linear-gradient(135deg,#2f6df6,#23496d);"
+            "background-color:#2f6df6;padding:46px 26px'>"
+            f"<div style='color:#ffffff;font-size:22px;font-weight:800;line-height:1.15'>{html.escape(headline)}</div>"
+            "<div style='margin-top:18px'><span style='display:inline-block;background:#e53935;"
+            "color:#ffffff;border-radius:10px;padding:6px 16px;font-size:20px'>&#9654;</span></div>"
+            "</td></tr></table>")
+    button = (
+        "<table role='presentation' align='center' cellpadding='0' cellspacing='0' style='margin:22px auto 6px'>"
+        "<tr><td bgcolor='#2f6df6' style='border-radius:8px;"
+        "background:linear-gradient(135deg,#5b6bf0,#2f6df6)'>"
+        f"<a href='{cta_url}' style='display:inline-block;padding:13px 30px;color:#ffffff;"
+        f"font-weight:700;font-size:16px;text-decoration:none'>&#128197;&nbsp;{html.escape(cta)}</a>"
+        "</td></tr></table>")
+    return (
+        f"{hero}"
+        "<div style='text-align:center;padding:18px 6px 2px'>"
+        f"<div style='font-size:22px;font-weight:800;color:#23496d;line-height:1.2'>{html.escape(headline)}</div></div>"
+        f"<div style='padding:4px 10px'>{paras_html}{bullets_html}</div>"
+        f"{button}")
+
+
+def build_html(*, headline, body_lines, cta, hero_b64=None):
+    inner = inner_email_html(headline, body_lines, cta, hero_b64)
     return f"""<!doctype html><html><head><meta charset='utf-8'></head>
 <body style="margin:0;background:{PAGE_BG};font-family:Arial,Helvetica,sans-serif">
-  <div style="width:600px;margin:0 auto;background:#fff;border:1px solid #e3e3e3">
-    <div style="text-align:center;padding:22px 0 10px">
+  <div style="width:600px;margin:0 auto;background:#fff;border:1px solid #e3e3e3;padding:0 20px 18px">
+    <div style="text-align:center;padding:22px 0 12px">
       <span style="font-size:26px;font-weight:800;color:#2f6df6;letter-spacing:-1px">bluon</span>
       <span style="font-size:12px;font-weight:700;color:#23496d;letter-spacing:2px;vertical-align:middle">&nbsp;FOR BUSINESS</span>
     </div>
-    {hero}
-    <div style="padding:22px 28px 8px;text-align:center">
-      <div style="font-size:22px;font-weight:800;color:#23496d;line-height:1.2">{html.escape(headline)}</div>
-    </div>
-    <div style="padding:4px 32px 8px">{paras_html}{bullets_html}</div>
-    <div style="text-align:center;padding:8px 0 26px">
-      <span style="display:inline-block;background:linear-gradient(135deg,#5b6bf0,#2f6df6);color:#fff;
-                   font-weight:700;font-size:16px;padding:13px 30px;border-radius:8px">&#128197;&nbsp;{html.escape(cta)}</span>
-    </div>
+    {inner}
   </div>
   <div style="width:600px;margin:10px auto 24px;text-align:center;color:#7a8aa0;font-size:11px;line-height:1.6">
     Bluon, Inc., 9160 Irvine Center Drive, Suite 100, Irvine, CA<br>
