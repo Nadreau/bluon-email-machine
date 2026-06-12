@@ -66,7 +66,7 @@ Answer line.
 
 Proof / testimonial line."
    ```
-   Status defaults to `Ready for Review`. Engaged → `--cta "Book a Demo"` `--channel HubSpot`; Unengaged → soft CTA like `--cta "Take a peek"` `--channel Anevvo`. Also tag each draft's tone with `--vibe` (one of: `Straight / Informative`, `Bold / Punchy`, `Curiosity`, `Urgency`, `Story`, `Testimonial`, `Funny`) so reporting can compare what tone performs. For an A/B test, write each variant as its own `write_draft.py` call sharing a `--test-group "<label>"`, distinct `--variant A|B`, and `--testing "<what differs: Subject Line|Landing Page|Header / Hook|...>"`.
+   Status defaults to `Ready for Review`. Engaged → `--cta "Book a Demo"` `--channel HubSpot`; Unengaged → soft CTA like `--cta "Take a peek"`. **Channel for unengaged:** default `--channel HubSpot`. **Anevvo is capacity-limited** — reserve it for exactly ONE high-value unengaged segment per week (commercial-unengaged or residential-unengaged, whichever is chosen that week); only that row gets `--channel Anevvo`. All other emails (every engaged + the other unengaged) send via HubSpot. Also tag each draft's tone with `--vibe` (one of: `Straight / Informative`, `Bold / Punchy`, `Curiosity`, `Urgency`, `Story`, `Testimonial`, `Funny`) so reporting can compare what tone performs. For an A/B test, write each variant as its own `write_draft.py` call sharing a `--test-group "<label>"`, distinct `--variant A|B`, and `--testing "<what differs: Subject Line|Landing Page|Header / Hook|...>"`.
 
 6. **Summarize** what you created (audience, subject, send date, Notion URL) at the end. Do not send any email.
 
