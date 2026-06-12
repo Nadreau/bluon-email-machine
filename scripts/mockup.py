@@ -197,3 +197,43 @@ def make_mockup_upload(*, headline, body_lines, cta, hero_url=None, filename="mo
     except Exception as e:
         print("mockup failed:", e)
         return None
+
+
+def make_email_png(*, headline, body_lines, cta, hero_url=None, out_png=None):
+    """Render the full email mockup to a local PNG and return its path."""
+    hero_b64 = fetch_hero_b64(hero_url) if hero_url else None
+    html_str = build_html(headline=headline, body_lines=body_lines, cta=cta, hero_b64=hero_b64)
+    return render_png(html_str, out_png or tempfile.mktemp(suffix=".png"))
+
+
+def screenshot_url(url, out_png=None, window="1280,2200"):
+    """Headless-Chrome screenshot of a LIVE url (e.g. a landing page) → PNG path.
+    Used to freeze how a landing page looked at send time."""
+    out_png = out_png or tempfile.mktemp(suffix=".png")
+    profile = tempfile.mkdtemp(prefix="chrome-shot-")
+    proc = subprocess.Popen(
+        [_chrome(), "--headless=new", "--disable-gpu", "--no-sandbox",
+         "--disable-dev-shm-usage", f"--user-data-dir={profile}", "--hide-scrollbars",
+         f"--window-size={window}", "--virtual-time-budget=8000",
+         f"--screenshot={out_png}", url],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    waited = 0.0
+    while waited < 45:
+        if os.path.exists(out_png) and os.path.getsize(out_png) > 1500:
+            break
+        time.sleep(0.5); waited += 0.5
+    try:
+        proc.terminate(); proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+    if not (os.path.exists(out_png) and os.path.getsize(out_png) > 1500):
+        raise RuntimeError("Chrome produced no landing-page screenshot")
+    return out_png
+
+
+def attach_file_to_property(page_id, prop_name, png_path, filename):
+    """Upload a PNG and set it as the value of a Notion *files* property."""
+    fid = upload_png(png_path, filename)
+    _api("PATCH", f"/pages/{page_id}", {"properties": {prop_name: {
+        "files": [{"type": "file_upload", "name": filename, "file_upload": {"id": fid}}]}}})
+    return fid

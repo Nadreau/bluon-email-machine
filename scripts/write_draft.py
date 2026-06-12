@@ -30,11 +30,21 @@ p.add_argument("--subject-formula", dest="subject_formula", default="")
 p.add_argument("--send-date", dest="send_date", default=None)
 p.add_argument("--status", default="Ready for Review")
 p.add_argument("--notes", default="Auto-drafted by Email Machine. For Pete review.")
+p.add_argument("--email", default=None, help="title override (else 'Audience Engagement')")
+p.add_argument("--type", dest="type_", default="Standard", help="'Standard' or '✦ Special'")
+p.add_argument("--campaign", default=None, help="campaign tag, e.g. 'Live Tech Support'")
+p.add_argument("--testing", default=None, help="what's being tested: Subject Line | Landing Page | Header / Hook | Feature | Offer | Vibe")
+p.add_argument("--variant", default=None, choices=["A", "B", "C"])
+p.add_argument("--test-group", dest="test_group", default=None, help="shared label tying A/B variants together")
+p.add_argument("--vibe", default=None)
+p.add_argument("--landing-page", dest="landing_page", default=None)
 a = p.parse_args()
 
 url = notion.create_draft(
     subject=a.subject, preview=a.preview, body=a.body, cta=a.cta, cta_url=a.cta_url,
     audience=a.audience, engagement=a.engagement, channel=a.channel, goal=a.goal,
     feature=a.feature, subject_formula=a.subject_formula, send_date=a.send_date,
-    status=a.status, notes=a.notes)
+    status=a.status, notes=a.notes, email=a.email, type_=a.type_, campaign=a.campaign,
+    testing=a.testing, variant=a.variant, test_group=a.test_group, vibe=a.vibe,
+    landing_page=a.landing_page)
 print(f"CREATED: {url}")

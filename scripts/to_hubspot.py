@@ -25,6 +25,23 @@ TEMPLATE_EMAIL_ID = os.environ.get("HS_TEMPLATE_ID", "32023009809")
 DEMO_URL = "https://www.bluon.com/demo"
 HS = "https://api.hubapi.com"
 
+# Smart landing-page defaults — picked by Campaign first, then audience. A url
+# already set on the row (manual override) is always respected over these.
+# TODO(niko): confirm the real Live Tech Support LP url once Prouty ships it.
+LANDING_PAGES = {
+    "Live Tech Support": "https://www.bluon.com/live-tech-support",
+}
+DEFAULT_LP = DEMO_URL
+
+
+def resolve_landing_page(pr):
+    """Existing row url wins; else map by Campaign; else the demo page."""
+    existing = (pr.get("Landing Page", {}) or {}).get("url")
+    if existing:
+        return existing
+    camp = (pr.get("Campaign", {}).get("select") or {}).get("name")
+    return LANDING_PAGES.get(camp, DEFAULT_LP)
+
 
 def hs(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
@@ -165,7 +182,32 @@ def make_draft(page_id):
     url = f"https://app.hubspot.com/email/{PORTAL}/edit/{eid}/content"
     notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Hubspot Email": {"url": url}}})
     print("HubSpot draft created:", url, "| email id:", eid)
+
+    snapshot(page_id, info, pr)
     return url
+
+
+def snapshot(page_id, info, pr):
+    """Freeze the report-time record on the row: the final email as an image, the
+    landing page url (smart default), and a screenshot of that page as it looks now."""
+    # 1) the final email mockup, as a file property
+    try:
+        kind, hsrc, _ = notion.detect_hero(info)
+        png = mockup.make_email_png(headline=info["subject"], body_lines=info["body_lines"],
+                                    cta=info["cta"], hero_url=hsrc if kind in ("video", "image") else None)
+        mockup.attach_file_to_property(page_id, "Email Image", png, "email.png")
+        print("  email image attached")
+    except Exception as e:
+        print("  email image failed:", e)
+    # 2) landing page url + a screenshot of it at send time
+    lp = resolve_landing_page(pr)
+    try:
+        notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Landing Page": {"url": lp}}})
+        shot = mockup.screenshot_url(lp)
+        mockup.attach_file_to_property(page_id, "Landing Page Screenshot", shot, "landing-page.png")
+        print("  landing page captured:", lp)
+    except Exception as e:
+        print("  landing page snapshot skipped (", lp, "):", e)
 
 
 def main():

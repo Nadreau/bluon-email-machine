@@ -167,17 +167,26 @@ def _week_of(send_date):
 
 def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
                  feature, send_date=None, goal=None, subject_formula=None,
-                 status=None, notes=None, cta_url=None, email=None):
+                 status=None, notes=None, cta_url=None, email=None,
+                 type_="Standard", campaign=None, testing=None, variant=None,
+                 test_group=None, vibe=None, landing_page=None):
     wk = _week_of(send_date) if send_date else None
-    title = f"{audience} {engagement}" + (f" — Week of {wk}" if wk else "")
+    mark = "✦ " if type_ and type_.startswith("✦") else ""
+    title = email or (f"{mark}{audience} {engagement}" + (f" — Week of {wk}" if wk else ""))
 
     def sel(v): return {"select": {"name": v}} if v else {"select": None}
     props = {
         "Email": {"title": [{"type": "text", "text": {"content": title[:200]}}]},
         "Audience": sel(audience), "Engagement": sel(engagement),
-        "Channel": sel(channel), "Feature": sel(feature),
-        "Ready to Go": {"checkbox": False}, "Regen requested": {"checkbox": False},
+        "Channel": sel(channel), "Feature": sel(feature), "Type": sel(type_),
+        "Ready to Go": {"checkbox": False},
     }
+    if campaign:     props["Campaign"] = sel(campaign)
+    if testing:      props["Testing"] = sel(testing)
+    if variant:      props["Variant"] = sel(variant)
+    if vibe:         props["Vibe"] = sel(vibe)
+    if test_group:   props["Test Group"] = {"rich_text": [{"type": "text", "text": {"content": test_group[:200]}}]}
+    if landing_page: props["Landing Page"] = {"url": landing_page}
     if send_date:
         props["Send Date"] = {"date": {"start": send_date}}
     page = _call("POST", "/pages", {

@@ -1,0 +1,34 @@
+name: Email Machine — Reporting Refresh
+
+# Pulls HubSpot send stats (recipients, delivery/open/CTR, clicks, bounces,
+# unsubscribes) into each linked Email Calendar row. Rows with no sends yet are
+# skipped, so this only fills in once emails actually go out. Runs daily; also
+# manually triggerable.
+
+on:
+  schedule:
+    - cron: "0 13 * * *"   # 13:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      page_id:
+        description: Notion page id (optional — refresh one row)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refresh reporting stats
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: |
+          if [ -n "${{ github.event.inputs.page_id }}" ]; then
+            python scripts/reporting.py "${{ github.event.inputs.page_id }}"
+          else
+            python scripts/reporting.py
+          fi
