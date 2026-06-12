@@ -16,12 +16,19 @@ native Video module (how Bluon builds them).
 import os, sys, json, html, time, tempfile, urllib.request, urllib.error
 import notion, mockup
 
-IMG_MODULE = "module_16043839347002"   # the template's hero image module
+# Bluon's canonical email layout (the real Non-Anevo Nurture structure), cloned
+# into a stable base template: logo -> hero image -> rich text -> button -> footer.
+TEMPLATE_EMAIL_ID = os.environ.get("HS_TEMPLATE_ID", "214935082610")
+LOGO_MODULE   = "module-0-0-0"
+HERO_MODULE   = "module_17389528910191"   # inject the hero image here
+BODY_MODULE   = "module_17406888513524"   # rich text body
+BUTTON_MODULE = "module_17810258159061"   # native CTA button (text + destination)
+FOOTER_MODULE = "module-2-0-0"
+KEEP = [LOGO_MODULE, HERO_MODULE, BODY_MODULE, BUTTON_MODULE, FOOTER_MODULE]
 
 HS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip() or open(
     os.path.expanduser("~/.config/hubspot/api_key")).read().strip()
 PORTAL = "6885872"
-TEMPLATE_EMAIL_ID = os.environ.get("HS_TEMPLATE_ID", "32023009809")
 DEMO_URL = "https://www.bluon.com/demo"
 HS = "https://api.hubapi.com"
 
@@ -68,8 +75,9 @@ def utm_link(base, pr):
     return base + sep + urllib.parse.urlencode(q)
 
 
-def body_html(info, cta_url=DEMO_URL):
-    """WYSIWYG-safe Bluon body — only elements HubSpot's editor keeps intact."""
+def body_html(info):
+    """WYSIWYG-safe Bluon body (headline + paragraphs + check-bullets). The CTA is
+    the template's native button module, so it's NOT included here."""
     out = [f'<h2 style="color:#23496d;text-align:center;font-weight:800;font-size:22px;'
            f'margin:0 0 16px">{html.escape(info["subject"])}</h2>']
     for ln in info["body_lines"]:
@@ -82,11 +90,6 @@ def body_html(info, cta_url=DEMO_URL):
         else:
             out.append(f'<p style="color:#222222;font-size:15px;line-height:1.5;margin:12px 0">'
                        f'{html.escape(ln)}</p>')
-    cta = html.escape(info["cta"] or "Book a Demo")
-    out.append(f'<p style="text-align:center;margin:26px 0 6px">'
-               f'<a href="{html.escape(cta_url)}" style="background-color:#2f6df6;color:#ffffff;'
-               f'font-weight:700;font-size:16px;padding:13px 30px;border-radius:8px;'
-               f'text-decoration:none;display:inline-block">&#128197; {cta}</a></p>')
     return "".join(out)
 
 
@@ -159,38 +162,38 @@ def make_draft(page_id):
     eid = clone["id"]
 
     content = hs("GET", f"/marketing/v3/emails/{eid}")["content"]
+    widgets = content["widgets"]
     cta_url = utm_link(resolve_landing_page(pr), pr)   # CTA → the row's landing page, UTM-tagged
-    rt = content["widgets"]["primary_rich_text_module"]   # keep full module, change only html
-    rt.setdefault("body", {})["html"] = body_html(info, cta_url)
-    widgets_patch = {"primary_rich_text_module": rt}
-    keep = ["primary_rich_text_module", "footer_module"]
+    widgets_patch = {}
 
-    # hero: always place an image module at the top — real video thumbnail / pasted
-    # image when identified, otherwise the branded Bluon banner (replaceable).
+    # body: rich text module
+    body = widgets[BODY_MODULE]
+    body.setdefault("body", {})["html"] = body_html(info)
+    widgets_patch[BODY_MODULE] = body
+
+    # CTA: the native button module (text + tracked destination)
+    btn = widgets[BUTTON_MODULE]
+    btn.setdefault("body", {})["text"] = info["cta"] or "Book a Demo"
+    btn["body"]["destination"] = cta_url
+    widgets_patch[BUTTON_MODULE] = btn
+
+    # hero image: real video thumbnail / pasted image, else branded Bluon banner
     src, link = resolve_hero(info, eid)
     hero_kind = "default Bluon banner" if not link and "youtube" not in str(link) else "media"
-    if src and IMG_MODULE in content["widgets"]:
-        imgmod = content["widgets"][IMG_MODULE]
-        imgmod.setdefault("body", {})["img"] = {"src": src, "alt": info["subject"], "width": 600}
-        imgmod["body"]["alignment"] = "center"
+    if src and HERO_MODULE in widgets:
+        hero = widgets[HERO_MODULE]
+        hero.setdefault("body", {})["img"] = {"src": src, "alt": info["subject"], "width": 600}
+        hero["body"]["alignment"] = "center"
         if link:
-            imgmod["body"]["link"] = link
+            hero["body"]["link"] = link
             hero_kind = "video thumbnail"
-        widgets_patch[IMG_MODULE] = imgmod
-        keep = [IMG_MODULE, "primary_rich_text_module", "footer_module"]
+        widgets_patch[HERO_MODULE] = hero
 
-    flex = content.get("flexAreas", {})
-    try:
-        for sec in flex.get("main", {}).get("sections", []):
-            for col in sec.get("columns", []):
-                col["widgets"] = keep
-    except Exception:
-        flex = None
-
+    # the clean base template already has the exact layout we want
+    # (logo -> hero -> body -> button -> footer), so we only swap module CONTENT
+    # and never touch flexAreas (rewriting it duplicated the modules).
     patch = {"subject": info["subject"], "name": name,
              "content": {"widgets": widgets_patch}}
-    if flex:
-        patch["content"]["flexAreas"] = flex
     hs("PATCH", f"/marketing/v3/emails/{eid}", patch)
     print("  hero:", hero_kind)
 

@@ -61,6 +61,7 @@ def refresh(page_id):
     props = stats_to_props(email.get("stats", {}) or {})
     if not props:
         print("  no sends yet:", name); return False
+    props["Status"] = {"select": {"name": "Sent"}}  # flips it into the Reporting view
     notion._call("PATCH", f"/pages/{page_id}", {"properties": props})
     print(f"  updated {name}: {props['Recipients']['number']} recipients, "
           f"open {props['Open Rate']['number']*100:.1f}%, ctr {props['CTR']['number']*100:.1f}%")
