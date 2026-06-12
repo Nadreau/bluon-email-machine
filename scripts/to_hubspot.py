@@ -54,7 +54,21 @@ def hs(method, path, body=None):
         raise SystemExit(f"HubSpot {method} {path} failed: {e.code} {e.read().decode()[:300]}")
 
 
-def body_html(info):
+def utm_link(base, pr):
+    """Append UTM tracking to the CTA destination so reporting can attribute the
+    click by campaign + audience/engagement (the link gap Imani flagged)."""
+    import urllib.parse
+    slug = lambda s: (s or "").lower().replace(" ", "-").replace("/", "-") or None
+    camp = slug((pr.get("Campaign", {}).get("select") or {}).get("name")) or "email-machine"
+    aud = slug((pr.get("Audience", {}).get("select") or {}).get("name")) or "all"
+    eng = slug((pr.get("Engagement", {}).get("select") or {}).get("name")) or "all"
+    q = {"utm_source": "bluon-email", "utm_medium": "email",
+         "utm_campaign": camp, "utm_content": f"{aud}-{eng}"}
+    sep = "&" if "?" in base else "?"
+    return base + sep + urllib.parse.urlencode(q)
+
+
+def body_html(info, cta_url=DEMO_URL):
     """WYSIWYG-safe Bluon body — only elements HubSpot's editor keeps intact."""
     out = [f'<h2 style="color:#23496d;text-align:center;font-weight:800;font-size:22px;'
            f'margin:0 0 16px">{html.escape(info["subject"])}</h2>']
@@ -70,7 +84,7 @@ def body_html(info):
                        f'{html.escape(ln)}</p>')
     cta = html.escape(info["cta"] or "Book a Demo")
     out.append(f'<p style="text-align:center;margin:26px 0 6px">'
-               f'<a href="{DEMO_URL}" style="background-color:#2f6df6;color:#ffffff;'
+               f'<a href="{html.escape(cta_url)}" style="background-color:#2f6df6;color:#ffffff;'
                f'font-weight:700;font-size:16px;padding:13px 30px;border-radius:8px;'
                f'text-decoration:none;display:inline-block">&#128197; {cta}</a></p>')
     return "".join(out)
@@ -145,8 +159,9 @@ def make_draft(page_id):
     eid = clone["id"]
 
     content = hs("GET", f"/marketing/v3/emails/{eid}")["content"]
+    cta_url = utm_link(resolve_landing_page(pr), pr)   # CTA → the row's landing page, UTM-tagged
     rt = content["widgets"]["primary_rich_text_module"]   # keep full module, change only html
-    rt.setdefault("body", {})["html"] = body_html(info)
+    rt.setdefault("body", {})["html"] = body_html(info, cta_url)
     widgets_patch = {"primary_rich_text_module": rt}
     keep = ["primary_rich_text_module", "footer_module"]
 
