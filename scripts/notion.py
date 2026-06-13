@@ -169,7 +169,7 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
                  feature, send_date=None, goal=None, subject_formula=None,
                  status=None, notes=None, cta_url=None, email=None,
                  type_="Standard", campaign=None, testing=None, variant=None,
-                 test_group=None, vibe=None, landing_page=None):
+                 test_group=None, vibe=None, landing_page=None, subject_variants=None):
     wk = _week_of(send_date) if send_date else None
     mark = "✦ " if type_ and type_.startswith("✦") else ""
     title = email or (f"{mark}{audience} {engagement}" + (f" — Week of {wk}" if wk else ""))
@@ -187,6 +187,7 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
     if vibe:         props["Vibe"] = sel(vibe)
     if test_group:   props["Test Group"] = {"rich_text": [{"type": "text", "text": {"content": test_group[:200]}}]}
     if landing_page: props["Landing Page"] = {"url": landing_page}
+    if subject_variants: props["Subject Variants"] = {"rich_text": [{"type": "text", "text": {"content": subject_variants[:1900]}}]}
     if send_date:
         props["Send Date"] = {"date": {"start": send_date}}
     page = _call("POST", "/pages", {

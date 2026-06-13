@@ -38,6 +38,8 @@ p.add_argument("--variant", default=None, choices=["A", "B", "C"])
 p.add_argument("--test-group", dest="test_group", default=None, help="shared label tying A/B variants together")
 p.add_argument("--vibe", default=None)
 p.add_argument("--landing-page", dest="landing_page", default=None)
+p.add_argument("--subject-variants", dest="subject_variants", default=None,
+               help="newline-separated subjects for a subject-line test (auto-fans into A/B/C)")
 a = p.parse_args()
 
 url = notion.create_draft(
@@ -46,5 +48,5 @@ url = notion.create_draft(
     feature=a.feature, subject_formula=a.subject_formula, send_date=a.send_date,
     status=a.status, notes=a.notes, email=a.email, type_=a.type_, campaign=a.campaign,
     testing=a.testing, variant=a.variant, test_group=a.test_group, vibe=a.vibe,
-    landing_page=a.landing_page)
+    landing_page=a.landing_page, subject_variants=a.subject_variants)
 print(f"CREATED: {url}")
