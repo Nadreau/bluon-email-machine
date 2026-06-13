@@ -228,6 +228,17 @@ def snapshot(page_id, info, pr):
         print("  landing page snapshot skipped (", lp, "):", e)
 
 
+def process(page_id):
+    """Approve-once-spawn: a subject-test base expands into its A/B/C variant rows
+    first, then each variant (and any plain row) gets its own HubSpot draft."""
+    import variants
+    for pid in variants.spawn(page_id):
+        pr = notion._call("GET", f"/pages/{pid}")["properties"]
+        if (pr.get("Hubspot Email", {}) or {}).get("url"):
+            continue  # already drafted
+        make_draft(pid)
+
+
 def main():
     arg = sys.argv[1].strip() if len(sys.argv) > 1 else "--ready"
     if arg == "--ready":
@@ -248,9 +259,9 @@ def main():
                 print(f"none ready yet (attempt {attempt+1}) — waiting for Notion…"); time.sleep(12)
         print(f"{len(targets)} row(s) Ready to Go without a draft")
         for pid in targets:
-            make_draft(pid)
+            process(pid)
     else:
-        make_draft(arg)
+        process(arg)
 
 
 if __name__ == "__main__":

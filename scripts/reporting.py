@@ -68,6 +68,27 @@ def refresh(page_id):
     return True
 
 
+def mark_winners():
+    """Within each Test Group, flag the winning variant once stats are in:
+    highest open rate for a subject-line test, highest CTR otherwise."""
+    groups = {}
+    for r in notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]:
+        p = r["properties"]
+        tg = "".join(x.get("plain_text", "") for x in (p.get("Test Group", {}).get("rich_text") or []))
+        if tg:
+            groups.setdefault(tg, []).append((r["id"], p))
+    for tg, rows in groups.items():
+        scored = [(pid, p) for pid, p in rows if (p.get("Open Rate", {}) or {}).get("number") is not None]
+        if len(scored) < 2:
+            continue
+        testing = (scored[0][1].get("Testing", {}).get("select") or {}).get("name", "")
+        metric = "Open Rate" if testing == "Subject Line" else "CTR"
+        win = max(scored, key=lambda x: (x[1].get(metric, {}) or {}).get("number") or 0)[0]
+        for pid, _ in rows:
+            notion._call("PATCH", f"/pages/{pid}", {"properties": {"Winner": {"checkbox": pid == win}}})
+        print(f"  winner in '{tg}' by {metric}")
+
+
 def main():
     if len(sys.argv) > 1:
         refresh(sys.argv[1]); return
@@ -76,6 +97,7 @@ def main():
         if refresh(r["id"]):
             n += 1
     print(f"refreshed {n} row(s) with live stats")
+    mark_winners()
 
 
 if __name__ == "__main__":
