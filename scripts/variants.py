@@ -44,7 +44,10 @@ def spawn(base_id):
         return [base_id]
 
     sel = lambda k: (pr.get(k, {}).get("select") or {}).get("name") or ""
-    group = f"{sel('Audience')}-{sel('Engagement')}-subj".lower().replace(" ", "")
+    # use the row's named Test Group if set (so two tests in the same audience/
+    # engagement — e.g. the two winbacks — don't collide on an auto-derived name)
+    named = "".join(x.get("plain_text", "") for x in (pr.get("Test Group", {}).get("rich_text") or []))
+    group = named or f"{sel('Audience')}-{sel('Engagement')}-subj".lower().replace(" ", "")
     base_title = "".join(x["plain_text"] for x in pr["Email"]["title"]).split(" · ")[0]
     send_date = (pr.get("Send Date", {}).get("date") or {}).get("start")
 
