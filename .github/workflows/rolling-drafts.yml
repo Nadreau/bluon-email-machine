@@ -1,0 +1,54 @@
+name: Email Machine — Rolling Daily
+
+# Runs every day. Keeps the calendar on a ROLLING 7-day basis:
+#   1) rolling.py rolls past sends off (Status = Sent) and reports open rotation
+#      slots for the next 7 days.
+#   2) Claude (Max OAuth, no API billing) drafts ONLY those open slots with good
+#      copy, per PROMPT.md + the guide.
+#   3) rolling.py --maintain renders mockups + flips past rows.
+# Past rows disappear from the approval view automatically via the Notion view
+# filter "Send Date is on or after today" (no job needed for the disappearing).
+
+on:
+  schedule:
+    - cron: "13 12 * * *"   # daily ~12:13 UTC; off-:00 on purpose
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write   # required by claude-code-action@v1
+
+jobs:
+  roll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare mockup renderer (Chrome + Pillow)
+        run: |
+          pip install --quiet pillow || pip3 install --quiet pillow || true
+          google-chrome --version || sudo apt-get update -y && sudo apt-get install -y google-chrome-stable || true
+
+      - name: Roll the window (past → Sent; report gaps)
+        run: python scripts/rolling.py --maintain
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CHROME_BIN: google-chrome
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "Read PROMPT.md in this repository and follow it exactly. We run on a ROLLING daily basis: draft ONLY the open slots that `python scripts/rolling.py --gaps` prints (next 7 days), nothing else. If it prints nothing, make no rows."
+          claude_args: |
+            --model claude-opus-4-8
+            --allowedTools Bash
+            --max-turns 30
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CHROME_BIN: google-chrome
+
+      - name: Render mockups for any new drafts
+        run: python scripts/regenerate.py --fill
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CHROME_BIN: google-chrome

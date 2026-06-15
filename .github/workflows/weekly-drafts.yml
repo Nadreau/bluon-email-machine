@@ -1,15 +1,10 @@
-name: Email Machine — Weekly Drafts
+name: Email Machine — Weekly Drafts (SUPERSEDED — manual only)
 
-# Generates next week's Bluon email drafts into the Notion Email Calendar
-# (Status = Ready for Review) using Claude Code on a Max subscription via OAuth.
-# No Anthropic API key / no per-token billing.
+# SUPERSEDED by rolling-drafts.yml (daily, rolling 7-day window). The Sunday cron
+# is disabled so the two don't both generate. Kept for manual one-off batch runs.
 
 on:
-  schedule:
-    # Sundays 15:13 UTC (~8:13 AM PT) — drafts ready before the week starts.
-    # Adjust to taste. Off-:00 minute on purpose.
-    - cron: "13 15 * * 0"
-  workflow_dispatch: {}   # lets you run it on demand from the Actions tab
+  workflow_dispatch: {}   # manual only — the daily rolling workflow handles scheduling
 
 permissions:
   contents: read
