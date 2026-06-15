@@ -162,38 +162,32 @@ def make_draft(page_id):
     eid = clone["id"]
 
     content = hs("GET", f"/marketing/v3/emails/{eid}")["content"]
-    widgets = content["widgets"]
+    widgets = content["widgets"]   # ALL modules — we mutate in place + send the whole dict
     cta_url = utm_link(resolve_landing_page(pr), pr)   # CTA → the row's landing page, UTM-tagged
-    widgets_patch = {}
 
     # body: rich text module
-    body = widgets[BODY_MODULE]
-    body.setdefault("body", {})["html"] = body_html(info)
-    widgets_patch[BODY_MODULE] = body
+    widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(info)
 
     # CTA: the native button module (text + tracked destination)
-    btn = widgets[BUTTON_MODULE]
-    btn.setdefault("body", {})["text"] = info["cta"] or "Book a Demo"
-    btn["body"]["destination"] = cta_url
-    widgets_patch[BUTTON_MODULE] = btn
+    btn = widgets[BUTTON_MODULE].setdefault("body", {})
+    btn["text"] = info["cta"] or "Book a Demo"
+    btn["destination"] = cta_url
 
     # hero image: real video thumbnail / pasted image, else branded Bluon banner
     src, link = resolve_hero(info, eid)
     hero_kind = "default Bluon banner" if not link and "youtube" not in str(link) else "media"
     if src and HERO_MODULE in widgets:
-        hero = widgets[HERO_MODULE]
-        hero.setdefault("body", {})["img"] = {"src": src, "alt": info["subject"], "width": 600}
-        hero["body"]["alignment"] = "center"
+        hero = widgets[HERO_MODULE].setdefault("body", {})
+        hero["img"] = {"src": src, "alt": info["subject"], "width": 600}
+        hero["alignment"] = "center"
         if link:
-            hero["body"]["link"] = link
+            hero["link"] = link
             hero_kind = "video thumbnail"
-        widgets_patch[HERO_MODULE] = hero
 
-    # the clean base template already has the exact layout we want
-    # (logo -> hero -> body -> button -> footer), so we only swap module CONTENT
-    # and never touch flexAreas (rewriting it duplicated the modules).
+    # Send the FULL widgets dict (logo + footer untouched) so the footer /
+    # unsubscribe survive — patching only the 3 changed modules dropped them.
     patch = {"subject": info["subject"], "name": name,
-             "content": {"widgets": widgets_patch}}
+             "content": {"widgets": widgets}}
     hs("PATCH", f"/marketing/v3/emails/{eid}", patch)
     print("  hero:", hero_kind)
 
