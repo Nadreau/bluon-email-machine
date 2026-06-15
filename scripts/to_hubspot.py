@@ -228,6 +228,8 @@ def process(page_id):
     import variants
     for pid in variants.spawn(page_id):
         pr = notion._call("GET", f"/pages/{pid}")["properties"]
+        if (pr.get("Channel", {}).get("select") or {}).get("name") == "Anevvo":
+            print("  Anevo — handled outside HubSpot, no draft:", pid); continue
         if (pr.get("Hubspot Email", {}) or {}).get("url"):
             continue  # already drafted
         make_draft(pid)
@@ -244,6 +246,8 @@ def main():
             for r in notion.get_calendar_rows():
                 if not r["ready"]:
                     continue
+                if r.get("channel") == "Anevvo":
+                    continue  # Anevo emails are NOT built in HubSpot (Tanner)
                 pr = notion._call("GET", f"/pages/{r['id']}")["properties"]
                 if not (pr.get("Hubspot Email", {}) or {}).get("url"):
                     targets.append(r["id"])
