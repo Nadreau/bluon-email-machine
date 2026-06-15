@@ -226,13 +226,21 @@ def process(page_id):
     """Approve-once-spawn: a subject-test base expands into its A/B/C variant rows
     first, then each variant (and any plain row) gets its own HubSpot draft."""
     import variants
-    for pid in variants.spawn(page_id):
+    ids = variants.spawn(page_id)                 # [base] or [base, B, C] for a subject test
+    for pid in ids:
         pr = notion._call("GET", f"/pages/{pid}")["properties"]
-        if (pr.get("Channel", {}).get("select") or {}).get("name") == "Anevvo":
-            print("  Anevo — handled outside HubSpot, no draft:", pid); continue
         if (pr.get("Hubspot Email", {}) or {}).get("url"):
-            continue  # already drafted
+            continue                              # already drafted — re-fires are no-ops
         make_draft(pid)
+    if len(ids) > 1:
+        # publish the whole fanned set together so the spawned variants don't need a
+        # second manual check; they're already drafted + linked, so the webhook
+        # re-fires this triggers just no-op (skip on "already drafted").
+        for pid in ids:
+            try:
+                notion.set_checkbox(pid, "Ready to Go", True)
+            except Exception:
+                pass
 
 
 def main():
@@ -246,8 +254,6 @@ def main():
             for r in notion.get_calendar_rows():
                 if not r["ready"]:
                     continue
-                if r.get("channel") == "Anevvo":
-                    continue  # Anevo emails are NOT built in HubSpot (Tanner)
                 pr = notion._call("GET", f"/pages/{r['id']}")["properties"]
                 if not (pr.get("Hubspot Email", {}) or {}).get("url"):
                     targets.append(r["id"])
