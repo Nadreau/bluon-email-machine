@@ -22,16 +22,26 @@ for the unengaged slot that needs it.
 import sys, datetime
 import notion
 
-# weekday (Mon=0 .. Sun=6) -> (Audience, Engagement, Channel). Sun is a rest day.
-ROTATION = {
-    0: ("ServiceTitan", "Engaged",   "HubSpot"),
-    1: ("ServiceTitan", "Unengaged", "HubSpot"),
-    2: ("Commercial",   "Engaged",   "HubSpot"),
-    3: ("Commercial",   "Unengaged", "Anevvo"),
-    4: ("Residential",  "Engaged",   "HubSpot"),
-    5: ("Residential",  "Unengaged", "HubSpot"),
-}
+# 3-week rotating cycle. The audience order shifts by one each week so no audience
+# sits in the same early/mid/late slot two weeks running. Audience-grouped,
+# engaged then unengaged, one email per day Mon–Sat (Sun = rest).
+ORDERS = [
+    ["Residential",  "Commercial",   "ServiceTitan"],  # week % 3 == 0
+    ["Commercial",   "ServiceTitan", "Residential"],   # week % 3 == 1
+    ["ServiceTitan", "Residential",  "Commercial"],    # week % 3 == 2
+]
 WINDOW = 7
+
+
+def slot_for(d):
+    """(Audience, Engagement, Channel) for a date per the rotating routine, or None on Sunday."""
+    wd = d.weekday()                       # 0=Mon .. 6=Sun
+    if wd > 5:
+        return None                        # Sunday = rest
+    order = ORDERS[d.isocalendar()[1] % 3]
+    aud = order[wd // 2]                    # Mon/Tue=early, Wed/Thu=mid, Fri/Sat=late
+    eng = "Engaged" if wd % 2 == 0 else "Unengaged"
+    return (aud, eng, "HubSpot")           # Anevo stays a per-send curation choice, not baked in
 
 # light, campaign-agnostic first-draft per audience (the --create fallback; AI/human improves)
 ANGLE = {
@@ -79,18 +89,22 @@ def _f(p, key, kind="select"):
         return (v.get("date") or {}).get("start")
 
 
-def mark_past_sent():
-    n = 0
+def roll_off():
+    """Past rows leave the approval window. Approved (Ready to Go) → Sent; never
+    approved → Unused (the backlog of stuff that passed without going out)."""
+    s = u = 0
     for r in _rows():
         p = r["properties"]
         sd = _f(p, "Send Date", "date")
         if not sd:
             continue
-        if datetime.date.fromisoformat(sd[:10]) < _today() and _f(p, "Status") != "Sent":
-            notion._call("PATCH", f"/pages/{r['id']}", {"properties": {"Status": {"select": {"name": "Sent"}}}})
-            n += 1
-    print(f"rolled off {n} past row(s) → Status = Sent")
-    return n
+        if datetime.date.fromisoformat(sd[:10]) < _today() and _f(p, "Status") not in ("Sent", "Unused"):
+            ready = p.get("Ready to Go", {}).get("checkbox")
+            new = "Sent" if ready else "Unused"
+            notion._call("PATCH", f"/pages/{r['id']}", {"properties": {"Status": {"select": {"name": new}}}})
+            s += ready; u += not ready
+    print(f"rolled off: {s} → Sent (approved), {u} → Unused (passed un-approved → backlog)")
+    return s + u
 
 
 def upcoming_gaps():
@@ -104,7 +118,7 @@ def upcoming_gaps():
     gaps = []
     for i in range(WINDOW):
         d = _today() + datetime.timedelta(days=i)
-        slot = ROTATION.get(d.weekday())
+        slot = slot_for(d)
         if not slot:
             continue
         aud, eng, ch = slot
@@ -155,9 +169,9 @@ def main():
         for d, a, e, c in upcoming_gaps():
             print(f"{d}\t{a}\t{e}\t{c}")
     elif mode == "--create":
-        mark_past_sent(); create_gaps(); fill_mockups()
+        roll_off(); create_gaps(); fill_mockups()
     else:  # --maintain
-        mark_past_sent(); fill_mockups(); status()
+        roll_off(); fill_mockups(); status()
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ jobs:
             --max-turns 30
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}   # read-only: recent sends for the no-repeat check
           CHROME_BIN: google-chrome
 
       - name: Render mockups for any new drafts

@@ -177,8 +177,10 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
     def sel(v): return {"select": {"name": v}} if v else {"select": None}
     props = {
         "Email": {"title": [{"type": "text", "text": {"content": title[:200]}}]},
+        "Subject": {"rich_text": [{"type": "text", "text": {"content": (subject or "")[:200]}}]},
         "Audience": sel(audience), "Engagement": sel(engagement),
         "Channel": sel(channel), "Feature": sel(feature), "Type": sel(type_),
+        "Status": sel("This Week"),   # so new rows aren't blank-status
         "Ready to Go": {"checkbox": False},
     }
     if campaign:     props["Campaign"] = sel(campaign)
