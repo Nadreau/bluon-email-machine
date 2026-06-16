@@ -45,11 +45,14 @@ def slot_for(d):
 
 # light, campaign-agnostic first-draft per audience (the --create fallback; AI/human improves)
 ANGLE = {
-    "ServiceTitan": ("Live Tech Support", "Live Human Backup — Right Alongside ServiceTitan",
-        ["Your techs already run ServiceTitan. Now they've got a live human expert to call when a job gets ugly — no new software to learn.",
+    # ServiceTitan = audience segment only. Live human support is Bluon's STANDALONE app —
+    # NEVER frame it as inside/alongside the ServiceTitan integration (Tanner rule, Jun 16 2026).
+    # The ST integration = parts/specs/manuals/AI lookup, not live support. Copy decoupled; finalize w/ Tanner.
+    "ServiceTitan": ("Live Tech Support", "Live Human Backup for Your HVAC Techs",
+        ["Bluon's live tech support is back — real HVAC experts your techs can call the moment a job gets ugly.",
          "Real HVAC experts with 20+ years experience pick up in real time, any brand, any equipment.",
          "- Fewer callbacks, more first-time fixes",
-         "- Works alongside the tools you already use"]),
+         "- One call, as long as it takes — no tickets, no hold"]),
     "Commercial": ("Live Tech Support", "Real Experts on Your Toughest Commercial Calls",
         ["Bluon's live technical support is back — real HVAC experts on the line for the commercial jobs that stall your team.",
          "Any brand, any equipment, any issue — your tech gets unstuck in minutes and the job keeps moving.",

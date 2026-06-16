@@ -34,6 +34,17 @@ def recent_hubspot_sends(days=28, limit=40):
         return []
 
 
+import os.path
+print("=" * 70)
+print("CAMPAIGN FOCUS — orient this week's drafts around this")
+print("=" * 70)
+_focus = os.path.join(os.path.dirname(__file__), "..", "FOCUS.md")
+try:
+    print(open(_focus).read())
+except Exception:
+    print("(no FOCUS.md — draft to the standard rotation)")
+
+print()
 print("=" * 70)
 print("EMAIL CONTENT INTELLIGENCE GUIDE")
 print("=" * 70)
