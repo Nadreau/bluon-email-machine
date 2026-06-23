@@ -50,20 +50,22 @@ def inner_email_html(headline, body_lines, cta, hero_b64=None,
     """The shared Bluon email design — hero, blue headline, check-bullets, gradient
     CTA button. Used BOTH for the rendered mockup and the HubSpot draft body so the
     two match. Email-safe: table-based hero + bulletproof button, inline styles."""
-    bullets, paras = [], []
+    # Render lines IN ORDER — a paragraph or a check-bullet per line — so bullets
+    # stay exactly where they sit in the copy (separating them sent bullets to the
+    # bottom, below the sign-off).
+    body_parts = []
     for ln in body_lines:
         ln = ln.strip()
         if not ln:
             continue
         if ln[:1] in ("-", "•", "*"):
-            bullets.append(html.escape(ln.lstrip("-•* ").strip()))
+            body_parts.append(
+                "<p style='margin:8px 0;color:#23496d;font-weight:600;font-size:15px;line-height:1.4'>"
+                f"&#9989;&nbsp;{html.escape(ln.lstrip('-•* ').strip())}</p>")
         else:
-            paras.append(html.escape(ln))
-    bullets_html = "".join(
-        "<p style='margin:8px 0;color:#23496d;font-weight:600;font-size:15px;line-height:1.4'>"
-        f"&#9989;&nbsp;{b}</p>" for b in bullets)
-    paras_html = "".join(
-        f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{p}</p>" for p in paras)
+            body_parts.append(
+                f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{html.escape(ln)}</p>")
+    body_inner = "".join(body_parts)
     if hero_b64:
         hero = (f"<img src='{hero_b64}' style='width:100%;border-radius:8px;display:block;margin:0 0 4px'>")
     else:
@@ -87,7 +89,7 @@ def inner_email_html(headline, body_lines, cta, hero_b64=None,
         f"{hero}"
         "<div style='text-align:center;padding:18px 6px 2px'>"
         f"<div style='font-size:22px;font-weight:800;color:#23496d;line-height:1.2'>{html.escape(headline)}</div></div>"
-        f"<div style='padding:4px 10px'>{paras_html}{bullets_html}</div>"
+        f"<div style='padding:4px 10px'>{body_inner}</div>"
         f"{button}")
 
 
