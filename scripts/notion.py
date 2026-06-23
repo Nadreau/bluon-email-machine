@@ -218,7 +218,7 @@ def parse_draft_page(page_id):
     blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
     section = "email"        # email -> notes -> mockup
     subject, cta, body, notes, style_notes = "", "Book a Demo", [], [], []
-    hero_url, mockup_old_ids = "", []
+    hero_url, mockup_old_ids, cta_dest = "", [], ""
     for b in blocks:
         t = b["type"]; txt = _block_text(b)
         if t == "heading_3" and NOTES_HEADING in txt:
@@ -237,9 +237,16 @@ def parse_draft_page(page_id):
             continue
         if txt.startswith("e.g."):
             continue          # the example placeholder callout — ignore entirely
-        # collect (( )) styling notes from anywhere
+        # collect (( )) hints. A URL inside (( )) = the CTA button's destination
+        # (editable right next to the CTA, never rendered in the mockup) — not a
+        # styling note.
         for m in PAREN.findall(txt):
-            style_notes.append(m.strip("()").strip())
+            inner = m.strip("()").strip().lstrip("→ ").strip()
+            if inner.startswith(("http://", "https://")):
+                if not cta_dest:
+                    cta_dest = inner
+            else:
+                style_notes.append(m.strip("()").strip())
         clean = PAREN.sub("", txt).strip()
         if section == "email":
             if txt.startswith("Preview:") or txt.startswith("bluon"):
@@ -254,7 +261,7 @@ def parse_draft_page(page_id):
         elif section == "notes":
             if clean and not clean.startswith("e.g. (("):
                 notes.append(clean)
-    return {"subject": subject, "body_lines": body, "cta": cta,
+    return {"subject": subject, "body_lines": body, "cta": cta, "cta_dest": cta_dest,
             "style_notes": style_notes + notes, "hero_url": hero_url,
             "mockup_old_ids": mockup_old_ids}
 

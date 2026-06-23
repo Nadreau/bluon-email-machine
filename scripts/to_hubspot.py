@@ -29,7 +29,7 @@ KEEP = [LOGO_MODULE, HERO_MODULE, BODY_MODULE, BUTTON_MODULE, FOOTER_MODULE]
 HS_TOKEN = os.environ.get("HUBSPOT_TOKEN", "").strip() or open(
     os.path.expanduser("~/.config/hubspot/api_key")).read().strip()
 PORTAL = "6885872"
-DEMO_URL = "https://www.bluon.com/demo"
+DEMO_URL = "https://www.bluon.com/get-demo"   # default CTA destination (the Get Demo page)
 HS = "https://api.hubapi.com"
 
 # Smart landing-page defaults — picked by Campaign first, then audience. A url
@@ -163,7 +163,9 @@ def make_draft(page_id):
 
     content = hs("GET", f"/marketing/v3/emails/{eid}")["content"]
     widgets = content["widgets"]   # ALL modules — we mutate in place + send the whole dict
-    cta_url = utm_link(resolve_landing_page(pr), pr)   # CTA → the row's landing page, UTM-tagged
+    # CTA destination: the (( url )) set next to the CTA wins, else the row's
+    # Landing Page, else the Get Demo page — all UTM-tagged.
+    cta_url = utm_link(info.get("cta_dest") or resolve_landing_page(pr), pr)
 
     # body: rich text module
     widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(info)
