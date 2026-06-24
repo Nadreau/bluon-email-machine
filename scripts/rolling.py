@@ -22,26 +22,14 @@ for the unengaged slot that needs it.
 import sys, datetime
 import notion
 
-# 3-week rotating cycle. The audience order shifts by one each week so no audience
-# sits in the same early/mid/late slot two weeks running. Audience-grouped,
-# engaged then unengaged, one email per day Mon–Sat (Sun = rest).
-ORDERS = [
-    ["Residential",  "Commercial",   "ServiceTitan"],  # week % 3 == 0
-    ["Commercial",   "ServiceTitan", "Residential"],   # week % 3 == 1
-    ["ServiceTitan", "Residential",  "Commercial"],    # week % 3 == 2
-]
+# Cadence: ONE send per audience per week, all anchored on the same weekday — the
+# team's standing send day is Wednesday (test send Wed, full send Thu; this week's
+# Live Tech Support set is dated Wed the 24th). Every audience gets hit once a week;
+# the cron never doubles an audience within a week (see upcoming_gaps).
+AUDIENCES = ["Residential", "Commercial", "ServiceTitan"]   # Churned = separate manual winback list
+ENGAGEMENTS = ["Engaged", "Unengaged"]
+SEND_WEEKDAY = 2          # 0=Mon .. so 2 = Wednesday
 WINDOW = 7
-
-
-def slot_for(d):
-    """(Audience, Engagement, Channel) for a date per the rotating routine, or None on Sunday."""
-    wd = d.weekday()                       # 0=Mon .. 6=Sun
-    if wd > 5:
-        return None                        # Sunday = rest
-    order = ORDERS[d.isocalendar()[1] % 3]
-    aud = order[wd // 2]                    # Mon/Tue=early, Wed/Thu=mid, Fri/Sat=late
-    eng = "Engaged" if wd % 2 == 0 else "Unengaged"
-    return (aud, eng, "HubSpot")           # Anevo stays a per-send curation choice, not baked in
 
 # light, campaign-agnostic first-draft per audience (the --create fallback; AI/human improves)
 ANGLE = {
@@ -116,15 +104,15 @@ def _week_monday(date_iso):
 
 
 def upcoming_gaps():
-    """Rotation slots in the next WINDOW days not yet covered.
+    """Audience+engagement groups not yet covered for an UPCOMING send day.
 
-    Coverage is matched per WEEK (not per exact date) so the backbone rule holds —
-    one send per audience+engagement group per week. A campaign/blast row that has
-    an Audience but NO Engagement set (e.g. the Live Tech Support launch rows) counts
-    as covering BOTH engagements for that audience that week. So once an audience is
-    on the calendar for the week, the cron won't duplicate it — it only fills
-    genuinely-missing audiences (the old code matched exact date + exact engagement,
-    so blank-engagement campaign rows looked 'missing' and got duplicated)."""
+    Cadence: one send per audience per week, all on that week's Wednesday. We only
+    look at FUTURE send days (today is skipped) so the current week's set is left
+    alone — this week's Live Tech Support rows dated Wed the 24th aren't touched; the
+    cron preps NEXT Wednesday. Coverage is matched per WEEK, and a row with an Audience
+    but NO Engagement (a campaign blast) counts as covering BOTH engagements for that
+    audience that week — so an audience already on a week's calendar is never
+    duplicated. Implements 'one send per group per week'."""
     have = set()          # {(week_monday, audience, engagement)}  (engagement may be None)
     for r in _rows():
         p = r["properties"]
@@ -135,16 +123,16 @@ def upcoming_gaps():
         if aud:
             have.add((_week_monday(sd), aud, _f(p, "Engagement")))
     gaps = []
-    for i in range(WINDOW):
+    for i in range(1, WINDOW + 1):                          # future days only (skip today)
         d = _today() + datetime.timedelta(days=i)
-        slot = slot_for(d)
-        if not slot:
+        if d.weekday() != SEND_WEEKDAY:                     # only the weekly send day (Wed)
             continue
-        aud, eng, ch = slot
         wk = _week_monday(d.isoformat())
-        if (wk, aud, eng) in have or (wk, aud, None) in have:
-            continue                 # group covered, or audience covered by a blast row
-        gaps.append((d.isoformat(), aud, eng, ch))
+        for aud in AUDIENCES:
+            for eng in ENGAGEMENTS:
+                if (wk, aud, eng) in have or (wk, aud, None) in have:
+                    continue                                # covered (incl. by a blast row)
+                gaps.append((d.isoformat(), aud, eng, "HubSpot"))
     return gaps
 
 
