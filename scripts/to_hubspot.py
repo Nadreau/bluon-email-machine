@@ -13,8 +13,23 @@ native Video module (how Bluon builds them).
   python to_hubspot.py <PAGE_ID>   # one row
   python to_hubspot.py --ready     # all rows that are Ready to Go but not yet drafted
 """
-import os, sys, json, html, time, tempfile, urllib.request, urllib.error
+import os, sys, json, re, html, time, tempfile, urllib.request, urllib.error
 import notion, mockup
+
+# HubSpot personalization token for the recipient's first name, with a graceful
+# "there" fallback when HubSpot has no first name on file. Inserted AFTER html
+# escaping (the quotes/braces must stay raw for HubL to fire).
+FNAME_TOKEN = '{{ contact.firstname|default("there") }}'
+
+
+def personalize(escaped):
+    """Turn a generic greeting / placeholder in the (already-escaped) copy into the
+    HubSpot first-name token. 'Hey there,' -> 'Hey {{ firstname|default(there) }},'.
+    Also honors an explicit {firstname} / {first_name} placeholder Pete can type."""
+    escaped = re.sub(r"(?i)\b(hey|hi|hello)([,!]?\s+)there\b",
+                     lambda m: m.group(1) + m.group(2) + FNAME_TOKEN, escaped)
+    escaped = re.sub(r"\{\{?\s*first[ _]?name\s*\}?\}", FNAME_TOKEN, escaped, flags=re.I)
+    return escaped
 
 # Bluon's canonical email layout (the real Non-Anevo Nurture structure), cloned
 # into a stable base template: logo -> hero image -> rich text -> button -> footer.
@@ -56,7 +71,8 @@ def hs(method, path, body=None):
         headers={"Authorization": f"Bearer {HS_TOKEN}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)
+            raw = r.read()
+            return json.loads(raw) if raw else {}   # 204 No Content (e.g. DELETE) → {}
     except urllib.error.HTTPError as e:
         raise SystemExit(f"HubSpot {method} {path} failed: {e.code} {e.read().decode()[:300]}")
 
@@ -86,10 +102,10 @@ def body_html(info):
             continue
         if ln[:1] in ("-", "•", "*"):
             out.append(f'<p style="color:#23496d;font-weight:600;font-size:15px;margin:8px 0">'
-                       f'&#9989;&nbsp;{html.escape(ln.lstrip("-•* ").strip())}</p>')
+                       f'&#9989;&nbsp;{personalize(html.escape(ln.lstrip("-•* ").strip()))}</p>')
         else:
             out.append(f'<p style="color:#222222;font-size:15px;line-height:1.5;margin:12px 0">'
-                       f'{html.escape(ln)}</p>')
+                       f'{personalize(html.escape(ln))}</p>')
     return "".join(out)
 
 

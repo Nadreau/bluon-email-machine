@@ -146,7 +146,7 @@ def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None):
     # mockup
     b.append({"object": "block", "type": "divider", "divider": {}})
     b.append({"object": "block", "type": "heading_3",
-              "heading_3": {"rich_text": [_t("📧  " + MOCKUP_HEADING + " — press 🔄 Regenerate Mockup after edits")]}})
+              "heading_3": {"rich_text": [_t("📧  " + MOCKUP_HEADING + " — press 🔄 Regenerate Mockup after edits (gives it ~30–60s to re-render)")]}})
     if image_fid:
         b.append({"object": "block", "type": "image",
                   "image": {"type": "file_upload", "file_upload": {"id": image_fid}}})
@@ -205,6 +205,17 @@ def _block_text(b):
     return "".join(x.get("plain_text", "") for x in b.get(t, {}).get("rich_text", []))
 
 
+def _first_href(b):
+    """First hyperlink in a block's rich text — e.g. a link Pete dropped on the
+    'Learn More' CTA text. That's the most intuitive way to point the button."""
+    t = b.get("type")
+    for x in b.get(t, {}).get("rich_text", []):
+        h = x.get("href")
+        if h:
+            return h
+    return None
+
+
 def _image_url(b):
     img = b.get("image", {})
     return (img.get("file") or img.get("external") or {}).get("url", "")
@@ -253,6 +264,12 @@ def parse_draft_page(page_id):
                 continue
             if t == "callout" and ("📅" in txt or "→" in txt):
                 cta = clean.replace("📅", "").replace("→", "").strip() or cta
+                # destination priority: an explicit (( url )) already won above;
+                # otherwise honor a hyperlink Pete dropped right on the CTA text.
+                if not cta_dest:
+                    href = _first_href(b)
+                    if href and href.startswith(("http://", "https://")):
+                        cta_dest = href
                 continue
             if t == "bulleted_list_item" and clean:
                 body.append("- " + clean)
