@@ -22,10 +22,9 @@ def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; n
     note = ""
     if info["style_notes"]:
         note = "  [styling notes: " + " | ".join(info["style_notes"])[:120] + "]"
-    kind, hsrc, _ = notion.detect_hero(info)   # video thumbnail / pasted image / banner
-    hero_url = hsrc if kind in ("video", "image") else None
-    fid = mockup.make_mockup_upload(headline=info["subject"], body_lines=info["body_lines"],
-                                    cta=info["cta"], hero_url=hero_url)
+    top_hero, flow = notion.email_layout(info)   # image at top (default) or moved inline
+    fid = mockup.make_mockup_upload(headline=info["subject"], flow=flow,
+                                    cta=info["cta"], top_hero=top_hero)
     if not fid:
         print("RENDER FAILED:", page_id)
         return False

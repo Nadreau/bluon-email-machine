@@ -56,8 +56,11 @@ def main():
             continue
         if not info["subject"]:
             print("skip (no subject):", r["name"]); skipped += 1; continue
-        fid = mockup.make_mockup_upload(headline=info["subject"],
-                                        body_lines=info["body"], cta=info["cta"])
+        flow = [{"kind": "bullet", "text": l.lstrip("-•* ").strip()}
+                if l.strip()[:1] in ("-", "•", "*") else {"kind": "para", "text": l.strip()}
+                for l in info["body"] if l.strip()]
+        fid = mockup.make_mockup_upload(headline=info["subject"], flow=flow,
+                                        cta=info["cta"], top_hero=("default", None, ""))
         if not fid:
             print("RENDER FAILED:", r["name"]); failed += 1; continue
         # remove the "pending" placeholder, then append the image

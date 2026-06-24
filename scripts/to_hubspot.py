@@ -91,21 +91,27 @@ def utm_link(base, pr):
     return base + sep + urllib.parse.urlencode(q)
 
 
-def body_html(info):
-    """WYSIWYG-safe Bluon body (headline + paragraphs + check-bullets). The CTA is
-    the template's native button module, so it's NOT included here."""
+def body_html(info, flow, uniq=""):
+    """WYSIWYG-safe Bluon body: headline + the ordered flow (paragraphs, check-
+    bullets, and any image Pete moved INTO the copy — hosted + inlined right where
+    he placed it). The CTA is the template's native button module, so it's not here."""
     out = [f'<h2 style="color:#23496d;text-align:center;font-weight:800;font-size:22px;'
            f'margin:0 0 16px">{html.escape(info["subject"])}</h2>']
-    for ln in info["body_lines"]:
-        ln = ln.strip()
-        if not ln:
-            continue
-        if ln[:1] in ("-", "•", "*"):
+    n = 0
+    for it in flow:
+        k = it.get("kind")
+        if k == "image":
+            n += 1
+            hosted = host_image(it.get("url"), f"body-{uniq}-{n}") or it.get("url")
+            if hosted:
+                out.append(f'<img src="{hosted}" style="width:100%;max-width:560px;height:auto;'
+                           f'border-radius:8px;display:block;margin:16px auto" alt="">')
+        elif k == "bullet":
             out.append(f'<p style="color:#23496d;font-weight:600;font-size:15px;margin:8px 0">'
-                       f'&#9989;&nbsp;{personalize(html.escape(ln.lstrip("-•* ").strip()))}</p>')
+                       f'&#9989;&nbsp;{personalize(html.escape(it.get("text", "")))}</p>')
         else:
             out.append(f'<p style="color:#222222;font-size:15px;line-height:1.5;margin:12px 0">'
-                       f'{personalize(html.escape(ln))}</p>')
+                       f'{personalize(html.escape(it.get("text", "")))}</p>')
     return "".join(out)
 
 
@@ -150,15 +156,13 @@ def upload_png(png_path, name="bluon-hero"):
         return None
 
 
-def resolve_hero(info, uniq):
-    """Return (img_src, link) for the hero, hosting whatever's needed:
-    video → hosted thumbnail + link; pasted image → hosted image; else → the
-    rendered Bluon banner (default placeholder, replaceable). `uniq` keeps each
-    email's hosted banner a distinct file."""
-    kind, src, link = notion.detect_hero(info)
+def host_top_hero(top_hero, info, uniq):
+    """Host the TOP hero slot's image and return (img_src, link). top_hero is
+    ("video"|"image"|"default", src, link): video → hosted thumbnail + watch link;
+    image → hosted image; default → the rendered branded Bluon banner."""
+    kind, src, link = top_hero
     if kind in ("video", "image"):
         return (host_image(src, f"hero-{uniq}") or src, link)
-    # default → render the branded Bluon banner with this email's headline + host it
     try:
         png = mockup.render_png(mockup.hero_banner_html(info["subject"]),
                                 tempfile.mktemp(suffix=".png"))
@@ -183,24 +187,33 @@ def make_draft(page_id):
     # Landing Page, else the Get Demo page — all UTM-tagged.
     cta_url = utm_link(info.get("cta_dest") or resolve_landing_page(pr), pr)
 
-    # body: rich text module
-    widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(info)
+    # image placement: a leading/video/no image → native top hero module (default);
+    # an image Pete dragged below copy → top_hero is None and it's inlined in the body.
+    top_hero, flow = notion.email_layout(info)
+
+    # body: rich text module (headline + flow, with any moved image inlined in place)
+    widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(info, flow, eid)
 
     # CTA: the native button module (text + tracked destination)
     btn = widgets[BUTTON_MODULE].setdefault("body", {})
     btn["text"] = info["cta"] or "Book a Demo"
     btn["destination"] = cta_url
 
-    # hero image: real video thumbnail / pasted image, else branded Bluon banner
-    src, link = resolve_hero(info, eid)
-    hero_kind = "default Bluon banner" if not link and "youtube" not in str(link) else "media"
-    if src and HERO_MODULE in widgets:
-        hero = widgets[HERO_MODULE].setdefault("body", {})
-        hero["img"] = {"src": src, "alt": info["subject"], "width": 600}
-        hero["alignment"] = "center"
-        if link:
-            hero["link"] = link
-            hero_kind = "video thumbnail"
+    # top hero module: populate it when the image belongs on top; otherwise REMOVE it
+    # so the template's default image doesn't show above an inline-placed graphic.
+    if top_hero is None:
+        widgets.pop(HERO_MODULE, None)
+        hero_kind = "inline (moved into body)"
+    else:
+        src, link = host_top_hero(top_hero, info, eid)
+        hero_kind = {"video": "video thumbnail", "image": "top image",
+                     "default": "default Bluon banner"}[top_hero[0]]
+        if src and HERO_MODULE in widgets:
+            hero = widgets[HERO_MODULE].setdefault("body", {})
+            hero["img"] = {"src": src, "alt": info["subject"], "width": 600}
+            hero["alignment"] = "center"
+            if link:
+                hero["link"] = link
 
     # Send the FULL widgets dict (logo + footer untouched) so the footer /
     # unsubscribe survive — patching only the 3 changed modules dropped them.
@@ -220,11 +233,11 @@ def make_draft(page_id):
 def snapshot(page_id, info, pr):
     """Freeze the report-time record on the row: the final email as an image, the
     landing page url (smart default), and a screenshot of that page as it looks now."""
-    # 1) the final email mockup, as a file property
+    # 1) the final email mockup, as a file property (same placement as the build)
     try:
-        kind, hsrc, _ = notion.detect_hero(info)
-        png = mockup.make_email_png(headline=info["subject"], body_lines=info["body_lines"],
-                                    cta=info["cta"], hero_url=hsrc if kind in ("video", "image") else None)
+        top_hero, flow = notion.email_layout(info)
+        png = mockup.make_email_png(headline=info["subject"], flow=flow,
+                                    cta=info["cta"], top_hero=top_hero)
         mockup.attach_file_to_property(page_id, "Email Image", png, "email.png")
         print("  email image attached")
     except Exception as e:

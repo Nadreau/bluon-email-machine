@@ -45,39 +45,54 @@ def fetch_hero_b64(url):
         return None
 
 
-def inner_email_html(headline, body_lines, cta, hero_b64=None,
+def _img_html(b64, *, top=False):
+    """An inline <img> (data URI) sized for the email column. `top` tightens the
+    margin when it's the hero sitting above the headline."""
+    if not b64:
+        return ""
+    margin = "0 0 6px" if top else "14px auto"
+    return (f"<img src='{b64}' style='width:100%;max-width:560px;height:auto;"
+            f"border-radius:8px;display:block;margin:{margin}'>")
+
+
+def _banner_html(headline):
+    return (
+        "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+        "style='border-radius:8px;overflow:hidden;margin:0 0 4px'><tr>"
+        "<td align='center' style='background:linear-gradient(135deg,#2f6df6,#23496d);"
+        "background-color:#2f6df6;padding:46px 26px'>"
+        f"<div style='color:#ffffff;font-size:22px;font-weight:800;line-height:1.15'>{html.escape(headline)}</div>"
+        "<div style='margin-top:18px'><span style='display:inline-block;background:#e53935;"
+        "color:#ffffff;border-radius:10px;padding:6px 16px;font-size:20px'>&#9654;</span></div>"
+        "</td></tr></table>")
+
+
+def inner_email_html(headline, flow, cta, *, top_hero_b64=None, top_is_banner=False,
                      cta_url="https://www.bluon.com/demo"):
-    """The shared Bluon email design — hero, blue headline, check-bullets, gradient
-    CTA button. Used BOTH for the rendered mockup and the HubSpot draft body so the
-    two match. Email-safe: table-based hero + bulletproof button, inline styles."""
-    # Render lines IN ORDER — a paragraph or a check-bullet per line — so bullets
-    # stay exactly where they sit in the copy (separating them sent bullets to the
-    # bottom, below the sign-off).
-    body_parts = []
-    for ln in body_lines:
-        ln = ln.strip()
-        if not ln:
-            continue
-        if ln[:1] in ("-", "•", "*"):
-            body_parts.append(
-                "<p style='margin:8px 0;color:#23496d;font-weight:600;font-size:15px;line-height:1.4'>"
-                f"&#9989;&nbsp;{html.escape(ln.lstrip('-•* ').strip())}</p>")
-        else:
-            body_parts.append(
-                f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{html.escape(ln)}</p>")
-    body_inner = "".join(body_parts)
-    if hero_b64:
-        hero = (f"<img src='{hero_b64}' style='width:100%;border-radius:8px;display:block;margin:0 0 4px'>")
+    """The shared Bluon email design — top hero (image / banner, or nothing when the
+    image sits inline), blue headline, ordered body (paragraphs / check-bullets /
+    inline images wherever Pete placed them), gradient CTA button. `flow` items are
+    {"kind": "para"|"bullet"|"image", "text"/"_b64": ...}; image items carry a
+    pre-fetched data URI in "_b64"."""
+    if top_hero_b64:
+        hero = _img_html(top_hero_b64, top=True)
+    elif top_is_banner:
+        hero = _banner_html(headline)
     else:
-        hero = (
-            "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-            "style='border-radius:8px;overflow:hidden;margin:0 0 4px'><tr>"
-            "<td align='center' style='background:linear-gradient(135deg,#2f6df6,#23496d);"
-            "background-color:#2f6df6;padding:46px 26px'>"
-            f"<div style='color:#ffffff;font-size:22px;font-weight:800;line-height:1.15'>{html.escape(headline)}</div>"
-            "<div style='margin-top:18px'><span style='display:inline-block;background:#e53935;"
-            "color:#ffffff;border-radius:10px;padding:6px 16px;font-size:20px'>&#9654;</span></div>"
-            "</td></tr></table>")
+        hero = ""                      # image was moved down → it renders in the flow
+    parts = []
+    for it in flow:
+        k = it.get("kind")
+        if k == "image":
+            parts.append(_img_html(it.get("_b64")))
+        elif k == "bullet":
+            parts.append(
+                "<p style='margin:8px 0;color:#23496d;font-weight:600;font-size:15px;line-height:1.4'>"
+                f"&#9989;&nbsp;{html.escape(it.get('text', ''))}</p>")
+        else:
+            parts.append(
+                f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{html.escape(it.get('text', ''))}</p>")
+    body_inner = "".join(parts)
     button = (
         "<table role='presentation' align='center' cellpadding='0' cellspacing='0' style='margin:22px auto 6px'>"
         "<tr><td bgcolor='#2f6df6' style='border-radius:8px;"
@@ -91,6 +106,29 @@ def inner_email_html(headline, body_lines, cta, hero_b64=None,
         f"<div style='font-size:22px;font-weight:800;color:#23496d;line-height:1.2'>{html.escape(headline)}</div></div>"
         f"<div style='padding:4px 10px'>{body_inner}</div>"
         f"{button}")
+
+
+def _prep_flow(flow):
+    """Fetch each inline image to a data URI so render_png can inline it."""
+    out = []
+    for it in (flow or []):
+        it = dict(it)
+        if it.get("kind") == "image":
+            it["_b64"] = fetch_hero_b64(it.get("url"))
+        out.append(it)
+    return out
+
+
+def _top_hero_pieces(top_hero):
+    """(kind, src, link) | None  ->  (top_hero_b64, top_is_banner) for rendering."""
+    if not top_hero:
+        return (None, False)
+    kind, src, link = top_hero
+    if kind in ("video", "image"):
+        return (fetch_hero_b64(src), False)
+    if kind == "default":
+        return (None, True)
+    return (None, False)
 
 
 def hero_banner_html(headline):
@@ -107,8 +145,10 @@ def hero_banner_html(headline):
 </body></html>"""
 
 
-def build_html(*, headline, body_lines, cta, hero_b64=None):
-    inner = inner_email_html(headline, body_lines, cta, hero_b64)
+def build_html(*, headline, flow, cta, top_hero_b64=None, top_is_banner=False,
+               cta_url="https://www.bluon.com/demo"):
+    inner = inner_email_html(headline, flow, cta, top_hero_b64=top_hero_b64,
+                             top_is_banner=top_is_banner, cta_url=cta_url)
     return f"""<!doctype html><html><head><meta charset='utf-8'></head>
 <body style="margin:0;background:{PAGE_BG};font-family:Arial,Helvetica,sans-serif">
   <div style="width:600px;margin:0 auto;background:#fff;border:1px solid #e3e3e3;padding:0 20px 18px">
@@ -188,12 +228,15 @@ def upload_png(png_path, filename="mockup.png"):
     return fid   # attach via {"type":"image","image":{"type":"file_upload","file_upload":{"id":fid}}}
 
 
-def make_mockup_upload(*, headline, body_lines, cta, hero_url=None, filename="mockup.png"):
+def make_mockup_upload(*, headline, flow, cta, top_hero=None,
+                       cta_url="https://www.bluon.com/demo", filename="mockup.png"):
     """Render + upload; return a Notion file_upload id, or None on failure.
-    hero_url: a pasted image to use as the hero (else gradient video placeholder)."""
+    flow: ordered body items (paras/bullets/inline images). top_hero: ("image"|
+    "video"|"default", src, link) for the top slot, or None when the image is inline."""
     try:
-        hero_b64 = fetch_hero_b64(hero_url) if hero_url else None
-        html_str = build_html(headline=headline, body_lines=body_lines, cta=cta, hero_b64=hero_b64)
+        b64, banner = _top_hero_pieces(top_hero)
+        html_str = build_html(headline=headline, flow=_prep_flow(flow), cta=cta,
+                              top_hero_b64=b64, top_is_banner=banner, cta_url=cta_url)
         png = render_png(html_str, tempfile.mktemp(suffix=".png"))
         return upload_png(png, filename)
     except Exception as e:
@@ -201,10 +244,12 @@ def make_mockup_upload(*, headline, body_lines, cta, hero_url=None, filename="mo
         return None
 
 
-def make_email_png(*, headline, body_lines, cta, hero_url=None, out_png=None):
+def make_email_png(*, headline, flow, cta, top_hero=None,
+                   cta_url="https://www.bluon.com/demo", out_png=None):
     """Render the full email mockup to a local PNG and return its path."""
-    hero_b64 = fetch_hero_b64(hero_url) if hero_url else None
-    html_str = build_html(headline=headline, body_lines=body_lines, cta=cta, hero_b64=hero_b64)
+    b64, banner = _top_hero_pieces(top_hero)
+    html_str = build_html(headline=headline, flow=_prep_flow(flow), cta=cta,
+                          top_hero_b64=b64, top_is_banner=banner, cta_url=cta_url)
     return render_png(html_str, out_png or tempfile.mktemp(suffix=".png"))
 
 

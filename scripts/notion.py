@@ -121,7 +121,7 @@ def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None):
     b.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": [_t(subject, bold=True, color=BLUE)]}})
     b.append(_para("Preview: " + (preview or ""), italic=True, color="gray"))
     b.append({"object": "block", "type": "callout", "callout": {
-        "rich_text": [_t(HERO_HINT + " paste your video thumbnail / graphic right below this line", color="gray")],
+        "rich_text": [_t(HERO_HINT + " default image spot — drop a graphic/video here, or move it anywhere in the email below (it renders wherever you put it)", color="gray")],
         "icon": {"type": "emoji", "emoji": "🖼"}, "color": "gray_background"}})
     for ln in body_lines:
         ln = ln.strip()
@@ -230,6 +230,8 @@ def parse_draft_page(page_id):
     section = "email"        # email -> notes -> mockup
     subject, cta, body, notes, style_notes = "", "Book a Demo", [], [], []
     hero_url, mockup_old_ids, cta_dest = "", [], ""
+    content = []   # ordered email-body stream (images + paras + bullets) so the
+                   # image can sit wherever Pete drags it, not just at the top
     for b in blocks:
         t = b["type"]; txt = _block_text(b)
         if t == "heading_3" and NOTES_HEADING in txt:
@@ -243,8 +245,11 @@ def parse_draft_page(page_id):
         if section == "mockup" and t in ("image", "callout"):
             mockup_old_ids.append(b["id"]); continue   # old render/placeholder to replace
         if t == "image":
+            url = _image_url(b)
             if not hero_url:          # first pasted image in email/notes = hero
-                hero_url = _image_url(b)
+                hero_url = url
+            if section == "email":    # record its POSITION in the email flow
+                content.append({"kind": "image", "url": url})
             continue
         if txt.startswith("e.g."):
             continue          # the example placeholder callout — ignore entirely
@@ -273,14 +278,16 @@ def parse_draft_page(page_id):
                 continue
             if t == "bulleted_list_item" and clean:
                 body.append("- " + clean)
+                content.append({"kind": "bullet", "text": clean})
             elif t == "paragraph" and clean and "Bluon, Inc." not in clean:
                 body.append(clean)
+                content.append({"kind": "para", "text": clean})
         elif section == "notes":
             if clean and not clean.startswith("e.g. (("):
                 notes.append(clean)
     return {"subject": subject, "body_lines": body, "cta": cta, "cta_dest": cta_dest,
             "style_notes": style_notes + notes, "hero_url": hero_url,
-            "mockup_old_ids": mockup_old_ids}
+            "content": content, "mockup_old_ids": mockup_old_ids}
 
 
 YOUTUBE_RE = re.compile(r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})")
@@ -299,6 +306,28 @@ def detect_hero(info):
     if info.get("hero_url"):
         return ("image", info["hero_url"], "")
     return ("default", None, "")
+
+
+def email_layout(info):
+    """Decide WHERE the image renders, so it's not locked to the top. Returns
+    (top_hero, flow):
+      top_hero = ("video"|"image"|"default", src, link) for the top slot, or None
+                 when the image was moved down (then it lives inline in the flow).
+      flow     = ordered body items (paras / bullets / inline images) to render,
+                 with the leading hero image removed if it was promoted to the top.
+    Rules: a video is always the top hero. An image that LEADS the body (before any
+    copy) is the top hero — the friendly default. An image dragged below some copy
+    stays inline at that spot. No image at all -> the default branded banner on top."""
+    content = list(info.get("content") or [])
+    kind, src, link = detect_hero(info)
+    if kind == "video":
+        return (("video", src, link), content)           # video is always the hero
+    if content and content[0]["kind"] == "image":         # leading image = default top hero
+        top = content.pop(0)
+        return (("image", top["url"], ""), content)
+    if kind == "image":                                   # image exists but sits lower
+        return (None, content)                            # -> render inline, no top hero
+    return (("default", None, ""), content)               # nothing pasted -> banner
 
 
 def parse_structure(page_id):

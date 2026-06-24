@@ -92,16 +92,14 @@ def spawn(base_id):
             "children": notion.styled_email_blocks(subject=subj, preview="",
                         body_lines=info["body_lines"], cta=info["cta"])})
         nid = page["id"]
-        # render the mockup + email image for the new variant
+        # render the mockup + email image for the new variant (same image placement)
         try:
-            kind, hsrc, _ = notion.detect_hero(info)
-            fid = mockup.make_mockup_upload(headline=subj, body_lines=info["body_lines"],
-                    cta=info["cta"], hero_url=hsrc if kind in ("video", "image") else None)
+            top_hero, flow = notion.email_layout(info)
+            fid = mockup.make_mockup_upload(headline=subj, flow=flow, cta=info["cta"], top_hero=top_hero)
             if fid:
                 notion._call("PATCH", f"/blocks/{nid}/children", {"children": [{"object": "block",
                     "type": "image", "image": {"type": "file_upload", "file_upload": {"id": fid}}}]})
-            png = mockup.make_email_png(headline=subj, body_lines=info["body_lines"], cta=info["cta"],
-                    hero_url=hsrc if kind in ("video", "image") else None)
+            png = mockup.make_email_png(headline=subj, flow=flow, cta=info["cta"], top_hero=top_hero)
             mockup.attach_file_to_property(nid, "Email Image", png, "email.png")
         except Exception as e:
             print("  mockup failed for", letter, e)
