@@ -14,7 +14,7 @@ import sys
 import notion, mockup
 
 
-def regen_page(page_id, clear_flag=False):
+def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; no-op (button-triggered now)
     info = notion.parse_draft_page(page_id)
     if not info["subject"]:
         print("skip (no subject):", page_id)
@@ -38,11 +38,11 @@ def regen_page(page_id, clear_flag=False):
     notion._call("PATCH", f"/blocks/{page_id}/children",
                  {"children": [{"object": "block", "type": "image",
                                 "image": {"type": "file_upload", "file_upload": {"id": fid}}}]})
-    if clear_flag:
-        try:
-            notion.set_checkbox(page_id, "Regen requested", False)
-        except Exception:
-            pass
+    # The Notion "Regenerate Mockup" BUTTON fires the webhook directly with the
+    # page id — there is no checkbox flag to clear (the old 'Regen requested'
+    # property is gone). Clearing it 400'd and, because _call raises SystemExit,
+    # crashed the whole run AFTER the image had already swapped in → false
+    # "mockup failed" alerts. So we simply don't.
     print(("regenerated" if not info["hero_url"] else "regenerated (w/ pasted hero)") +
           ":", page_id, ("· " + str(len(info["style_notes"])) + " styling notes" if info["style_notes"] else ""))
     return True
