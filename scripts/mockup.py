@@ -5,7 +5,17 @@ The image shows how the draft will roughly look as a real Bluon HubSpot email
 Rendering uses headless Chrome (env CHROME_BIN, else common paths); cropping uses
 Pillow. Upload uses the Notion File Upload API (NOTION_TOKEN).
 """
-import os, json, time, subprocess, tempfile, urllib.request, urllib.error, html
+import os, re, json, time, subprocess, tempfile, urllib.request, urllib.error, html
+
+# Show the first-name personalization in the PREVIEW the way HubSpot will render it:
+# "Hey there," -> "Hey [First Name]," (and any {firstname} placeholder). Display-only —
+# mirrors to_hubspot.personalize() so the mockup reflects the personalized greeting.
+_GREET_RE = re.compile(r"(?i)\b(hey|hi|hello)([,!]?\s+)there\b")
+
+
+def _disp_name(t):
+    t = _GREET_RE.sub(lambda m: m.group(1) + m.group(2) + "[First Name]", t)
+    return re.sub(r"\{\{?\s*first[ _]?name\s*\}?\}", "[First Name]", t, flags=re.I)
 
 NV = "2022-06-28"
 API = "https://api.notion.com/v1"
@@ -88,10 +98,10 @@ def inner_email_html(headline, flow, cta, *, top_hero_b64=None, top_is_banner=Fa
         elif k == "bullet":
             parts.append(
                 "<p style='margin:8px 0;color:#23496d;font-weight:600;font-size:15px;line-height:1.4'>"
-                f"&#9989;&nbsp;{html.escape(it.get('text', ''))}</p>")
+                f"&#9989;&nbsp;{html.escape(_disp_name(it.get('text', '')))}</p>")
         else:
             parts.append(
-                f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{html.escape(it.get('text', ''))}</p>")
+                f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{html.escape(_disp_name(it.get('text', '')))}</p>")
     body_inner = "".join(parts)
     button = (
         "<table role='presentation' align='center' cellpadding='0' cellspacing='0' style='margin:22px auto 6px'>"
