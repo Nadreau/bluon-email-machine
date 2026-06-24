@@ -113,7 +113,7 @@ def _para(text, **kw):
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [_t(text, **kw)]}}
 
 
-def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None):
+def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None, hero_fid=None):
     b = []
     b.append({"object": "block", "type": "callout", "callout": {
         "rich_text": [_t("bluon", bold=True, color=BLUE), _t("   FOR BUSINESS", color=BLUE)],
@@ -123,6 +123,9 @@ def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None):
     b.append({"object": "block", "type": "callout", "callout": {
         "rich_text": [_t(HERO_HINT + " default image spot — drop a graphic/video here, or move it anywhere in the email below (it renders wherever you put it)", color="gray")],
         "icon": {"type": "emoji", "emoji": "🖼"}, "color": "gray_background"}})
+    if hero_fid:   # campaign hero pre-placed at the top (e.g. the LTS Wave 2 portal still)
+        b.append({"object": "block", "type": "image",
+                  "image": {"type": "file_upload", "file_upload": {"id": hero_fid}}})
     for ln in body_lines:
         ln = ln.strip()
         if not ln:
@@ -165,6 +168,25 @@ def _week_of(send_date):
         return None
 
 
+# A campaign hero image checked into the repo. When present, every generated draft
+# gets it pre-placed as the top hero (e.g. the Live Tech Support Wave 2 portal still
+# of Brian & Joel). Delete/rename this file to end the campaign and go back to the
+# blank hero spot. Path is relative to the repo root (this file lives in scripts/).
+CAMPAIGN_HERO = os.path.join(os.path.dirname(__file__), "..", "assets", "campaign-hero.png")
+
+
+def _campaign_hero_fid():
+    """Upload the committed campaign hero to Notion → file_upload id, or None."""
+    if not os.path.isfile(CAMPAIGN_HERO):
+        return None
+    try:
+        import mockup
+        return mockup.upload_png(CAMPAIGN_HERO, "campaign-hero.png")
+    except Exception as e:
+        print("campaign hero upload skipped:", e)
+        return None
+
+
 def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
                  feature, send_date=None, goal=None, subject_formula=None,
                  status=None, notes=None, cta_url=None, email=None,
@@ -195,7 +217,8 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
     page = _call("POST", "/pages", {
         "parent": {"database_id": CALENDAR_DB_ID}, "properties": props,
         "children": styled_email_blocks(subject=subject, preview=preview,
-                    body_lines=(body or "").split("\n"), cta=cta)})
+                    body_lines=(body or "").split("\n"), cta=cta,
+                    hero_fid=_campaign_hero_fid())})
     return page.get("url", page.get("id"))
 
 
