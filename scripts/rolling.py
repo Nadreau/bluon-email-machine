@@ -110,14 +110,30 @@ def roll_off():
     return s + u
 
 
+def _week_monday(date_iso):
+    d = datetime.date.fromisoformat(date_iso[:10])
+    return (d - datetime.timedelta(days=d.weekday())).isoformat()
+
+
 def upcoming_gaps():
-    """Rotation slots in the next WINDOW days that have no drafted row yet."""
-    have = set()
+    """Rotation slots in the next WINDOW days not yet covered.
+
+    Coverage is matched per WEEK (not per exact date) so the backbone rule holds —
+    one send per audience+engagement group per week. A campaign/blast row that has
+    an Audience but NO Engagement set (e.g. the Live Tech Support launch rows) counts
+    as covering BOTH engagements for that audience that week. So once an audience is
+    on the calendar for the week, the cron won't duplicate it — it only fills
+    genuinely-missing audiences (the old code matched exact date + exact engagement,
+    so blank-engagement campaign rows looked 'missing' and got duplicated)."""
+    have = set()          # {(week_monday, audience, engagement)}  (engagement may be None)
     for r in _rows():
         p = r["properties"]
         sd = _f(p, "Send Date", "date")
-        if sd:
-            have.add((sd[:10], _f(p, "Audience"), _f(p, "Engagement")))
+        if not sd:
+            continue
+        aud = _f(p, "Audience")
+        if aud:
+            have.add((_week_monday(sd), aud, _f(p, "Engagement")))
     gaps = []
     for i in range(WINDOW):
         d = _today() + datetime.timedelta(days=i)
@@ -125,8 +141,10 @@ def upcoming_gaps():
         if not slot:
             continue
         aud, eng, ch = slot
-        if (d.isoformat(), aud, eng) not in have:
-            gaps.append((d.isoformat(), aud, eng, ch))
+        wk = _week_monday(d.isoformat())
+        if (wk, aud, eng) in have or (wk, aud, None) in have:
+            continue                 # group covered, or audience covered by a blast row
+        gaps.append((d.isoformat(), aud, eng, ch))
     return gaps
 
 
