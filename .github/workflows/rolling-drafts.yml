@@ -53,3 +53,19 @@ jobs:
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           CHROME_BIN: google-chrome
+
+      - name: Self-heal Email Image snapshots (fill any missing)
+        run: python scripts/regenerate.py --fill-images
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CHROME_BIN: google-chrome
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -s -X POST "$SLACK_WEBHOOK_URL" -H 'Content-type: application/json' \
+              --data "{\"text\":\":rotating_light: Email Machine — *Rolling Daily* failed (drafts may be missing for the week). <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|view run>\"}" || true
+          fi

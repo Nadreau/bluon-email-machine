@@ -11,7 +11,7 @@ skips subjects that already have a row in the group).
 
   python scripts/variants.py <base_page_id>
 """
-import sys
+import sys, re
 import notion, mockup
 
 CARRY = ["Audience", "Engagement", "Channel", "Feature", "Type", "Campaign",
@@ -45,10 +45,25 @@ def _title(stem, audience, letter, diff):
     return f'{head}  "{diff}"'[:200]
 
 
+def canonical_group(stem, audience):
+    """Deterministic, readable Test Group so the group-by view stays consistent across
+    runs: '<Stem> · <Audience>'. (A human-set Test Group still wins, for the rare case
+    of two different tests on the same stem + audience.)"""
+    return " · ".join(x for x in ((stem or "").strip(), (audience or "").strip()) if x) or "Test"
+
+
 def _variants(pr):
+    """Alternate subjects for a subject test — accepts one-per-line OR pipe-delimited
+    ('A: … | B: …'), stripping any leading 'A:' / 'B.' / 'C)' variant label. (The
+    pipe form used to silently parse as a single subject and the test never fanned.)"""
     rt = (pr.get("Subject Variants", {}) or {}).get("rich_text", [])
     text = "".join(x.get("plain_text", "") for x in rt)
-    return [s.strip() for s in text.splitlines() if s.strip()]
+    out = []
+    for s in re.split(r"\s*\|\s*|\n", text):
+        s = re.sub(r"^[A-Fa-f]\s*[:.)\-]\s*", "", s.strip()).strip()
+        if s:
+            out.append(s)
+    return out
 
 
 def _carry_props(pr):
@@ -66,22 +81,27 @@ def spawn(base_id):
     info = notion.parse_draft_page(base_id)
     pr = notion._call("GET", f"/pages/{base_id}")["properties"]
     subjects = _variants(pr)
+    sel = lambda k: (pr.get(k, {}).get("select") or {}).get("name") or ""
     if len(subjects) < 2:
-        print("not a multi-subject test (need 2+ in Subject Variants):", base_id)
+        if sel("Testing") == "Subject Line":   # MEANT to be a test — don't fail silently
+            print("⚠️  SUBJECT TEST but <2 subjects parsed from 'Subject Variants' — NOT fanning out. "
+                  "Put one subject per line (or 'A: … | B: …'):", base_id)
+        else:
+            print("not a multi-subject test (need 2+ in Subject Variants):", base_id)
         return [base_id]
 
-    sel = lambda k: (pr.get(k, {}).get("select") or {}).get("name") or ""
-    # use the row's named Test Group if set (so two tests in the same audience/
-    # engagement — e.g. the two winbacks — don't collide on an auto-derived name)
-    named = "".join(x.get("plain_text", "") for x in (pr.get("Test Group", {}).get("rich_text") or []))
-    group = named or f"{sel('Audience')}-{sel('Engagement')}-subj".lower().replace(" ", "")
     audience = sel("Audience")
     # Test Stem = the campaign/series name shown first in the title. Read it from the
-    # property (don't re-split a title); derive + persist a sensible one if unset.
+    # property (don't re-split a title); derive a sensible one if unset.
     stem = "".join(x.get("plain_text", "") for x in (pr.get("Test Stem", {}).get("rich_text") or [])).strip()
     if not stem:
         old = "".join(x["plain_text"] for x in pr["Email"]["title"])
         stem = sel("Campaign") or old.split(" - ")[0].split(" · ")[0].strip() or "Email"
+    # Test Group: a human-set one wins (disambiguates two tests on one audience);
+    # otherwise a canonical, consistent '<Stem> · <Audience>' — so the group-by view
+    # never fragments across runs (no more lowercase slugs / LLM-invented labels).
+    named = "".join(x.get("plain_text", "") for x in (pr.get("Test Group", {}).get("rich_text") or []))
+    group = named or canonical_group(stem, audience)
     diffs = [_differentiator(s, _common_prefix(subjects)) for s in subjects]
     send_date = (pr.get("Send Date", {}).get("date") or {}).get("start")
 

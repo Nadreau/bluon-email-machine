@@ -32,3 +32,12 @@ jobs:
           else
             python scripts/reporting.py
           fi
+      - name: Alert on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -s -X POST "$SLACK_WEBHOOK_URL" -H 'Content-type: application/json' \
+              --data "{\"text\":\":rotating_light: Email Machine — *Reporting Refresh* failed (stats may be frozen). <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|view run>\"}" || true
+          fi

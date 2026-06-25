@@ -35,7 +35,8 @@ def stats_to_props(stats):
         return None  # nothing sent yet — leave the row alone
     pct = lambda v: round((v or 0) / 100.0, 5)
     return {
-        "Recipients":    {"number": c.get("delivered", c.get("sent", 0))},
+        "Audience Size": {"number": c.get("selected") or c.get("sent", 0)},  # pre-suppression target pool
+        "Recipients":    {"number": c.get("delivered", c.get("sent", 0))},   # delivered = rate denominator
         "Delivery Rate": {"number": pct(r.get("deliveredratio"))},
         "Open Rate":     {"number": pct(r.get("openratio"))},
         "CTR":           {"number": pct(r.get("clickratio"))},

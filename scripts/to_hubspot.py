@@ -47,22 +47,53 @@ PORTAL = "6885872"
 DEMO_URL = "https://www.bluon.com/get-demo"   # default CTA destination (the Get Demo page)
 HS = "https://api.hubapi.com"
 
-# Smart landing-page defaults — picked by Campaign first, then audience. A url
-# already set on the row (manual override) is always respected over these.
-# TODO(niko): confirm the real Live Tech Support LP url once Prouty ships it.
+# Smart landing-page defaults — picked by Campaign, then Audience. A url already set
+# on the row (manual override) always wins. Each entry is either a url, or a dict of
+# {Audience: url, "_default": url} for per-audience routing.
+# NOTE: the real Live Tech Support LP is NOT shipped yet (bluon.com/live-tech-support
+# 404s as of Jun 2026), so LTS routes to the verified Get Demo page until Prouty ships
+# it. When the real URL exists, set "_default" here — and for ServiceTitan use the
+# STANDALONE live-support page, NEVER the ServiceTitan-integration page (hard rule:
+# live tech support is Bluon's standalone product).
 LANDING_PAGES = {
-    "Live Tech Support": "https://www.bluon.com/live-tech-support",
+    "Live Tech Support": {"_default": DEMO_URL},   # TODO(niko): real LTS url from Prouty
 }
 DEFAULT_LP = DEMO_URL
 
 
+def _url_ok(url):
+    """True if the url responds < 400 — so we never ship a dead landing page."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status < 400
+    except urllib.error.HTTPError as e:
+        return e.code < 400
+    except Exception:
+        return False
+
+
 def resolve_landing_page(pr):
-    """Existing row url wins; else map by Campaign; else the demo page."""
+    """Existing row url wins (manual override, as-is); else map by Campaign (+Audience);
+    else the demo page. The auto-mapped url is validity-checked — a non-2xx result falls
+    back to the verified default so an unshipped/typo'd campaign URL can't silently route
+    a whole audience to a 404 during an unattended run."""
     existing = (pr.get("Landing Page", {}) or {}).get("url")
     if existing:
         return existing
     camp = (pr.get("Campaign", {}).get("select") or {}).get("name")
-    return LANDING_PAGES.get(camp, DEFAULT_LP)
+    aud = (pr.get("Audience", {}).get("select") or {}).get("name")
+    entry = LANDING_PAGES.get(camp)
+    if isinstance(entry, dict):
+        url = entry.get(aud) or entry.get("_default") or DEFAULT_LP
+    elif isinstance(entry, str):
+        url = entry
+    else:
+        url = DEFAULT_LP
+    if not _url_ok(url):
+        print(f"  landing page {url} unreachable — falling back to {DEFAULT_LP}")
+        url = DEFAULT_LP
+    return url
 
 
 def hs(method, path, body=None):
@@ -213,8 +244,11 @@ def make_draft(page_id):
     content = hs("GET", f"/marketing/v3/emails/{eid}")["content"]
     widgets = content["widgets"]   # ALL modules — we mutate in place + send the whole dict
     # CTA destination: the (( url )) set next to the CTA wins, else the row's
-    # Landing Page, else the Get Demo page — all UTM-tagged.
-    cta_url = utm_link(info.get("cta_dest") or resolve_landing_page(pr), pr)
+    # Landing Page, else the Get Demo page — all UTM-tagged. base_lp is the exact
+    # destination the button uses (pre-UTM); snapshot() records THAT as the Landing
+    # Page so the property never drifts from where the button actually points.
+    base_lp = info.get("cta_dest") or resolve_landing_page(pr)
+    cta_url = utm_link(base_lp, pr)
 
     # image placement: a leading/video/no image → native top hero module (default);
     # an image Pete dragged below copy → top_hero is None and it's inlined in the body.
@@ -255,13 +289,14 @@ def make_draft(page_id):
     notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Hubspot Email": {"url": url}}})
     print("HubSpot draft created:", url, "| email id:", eid)
 
-    snapshot(page_id, info, pr)
+    snapshot(page_id, info, pr, landing_url=base_lp)
     return url
 
 
-def snapshot(page_id, info, pr):
+def snapshot(page_id, info, pr, landing_url=None):
     """Freeze the report-time record on the row: the final email as an image, the
-    landing page url (smart default), and a screenshot of that page as it looks now."""
+    landing page url (the button's actual destination), and a screenshot of that page
+    as it looks now."""
     # 1) the final email mockup, as a file property (same placement as the build)
     try:
         top_hero, flow = notion.email_layout(info)
@@ -271,8 +306,8 @@ def snapshot(page_id, info, pr):
         print("  email image attached")
     except Exception as e:
         print("  email image failed:", e)
-    # 2) landing page url + a screenshot of it at send time
-    lp = resolve_landing_page(pr)
+    # 2) landing page url (what the button actually points to) + a screenshot at send time
+    lp = landing_url or resolve_landing_page(pr)
     try:
         notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Landing Page": {"url": lp}}})
         shot = mockup.screenshot_url(lp)

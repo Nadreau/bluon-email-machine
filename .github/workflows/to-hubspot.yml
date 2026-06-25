@@ -4,6 +4,11 @@ name: Email Machine — Draft to HubSpot
 # repository_dispatch type "hubspot", carrying the page id). Clones a Bluon
 # template email, fills it with this row's subject + body, and writes the
 # HubSpot editor link back into the row's "Hubspot Email" property.
+#
+# SAFETY NET: also runs on a schedule. The Notion webhook is best-effort — a
+# single dropped event would otherwise leave an approved email never drafted.
+# The scheduled run does the idempotent `--ready` sweep (every Ready-to-Go row
+# with no HubSpot draft yet), so nothing approved can silently fall through.
 
 on:
   repository_dispatch:
@@ -13,9 +18,16 @@ on:
       page_id:
         description: Notion page id
         required: false
+  schedule:
+    - cron: "*/30 * * * *"   # safety-net sweep every 30 min (idempotent)
 
 permissions:
   contents: read
+
+# Don't let two dispatches for the SAME page clone it twice (TOCTOU race).
+concurrency:
+  group: hubspot-${{ github.event.client_payload.page_id || github.event.inputs.page_id || 'ready' }}
+  cancel-in-progress: false
 
 jobs:
   draft:
@@ -38,4 +50,13 @@ jobs:
             python scripts/to_hubspot.py "$PAGE_ID"
           else
             python scripts/to_hubspot.py --ready
+          fi
+      - name: Alert on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -s -X POST "$SLACK_WEBHOOK_URL" -H 'Content-type: application/json' \
+              --data "{\"text\":\":rotating_light: Email Machine — *Draft to HubSpot* failed. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|view run>\"}" || true
           fi

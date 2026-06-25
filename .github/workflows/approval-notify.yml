@@ -1,11 +1,15 @@
 name: Email Machine — Approval → Slack
 
 # When a draft's Approved box is checked, ping Kelsey to queue the send.
-# Pure Python (no Claude) — safe dry-run no-op until SLACK_WEBHOOK_URL is set.
+#
+# SCHEDULE DISABLED (Jun 2026): notify_approved.py still polls the OLD schema
+# ("Approved" / "Sent to Kelsey" properties that no longer exist), so the cron
+# only burned Actions minutes and never fired. Left as manual-only until the
+# script is repointed to the live schema (gate on "Ready to Go"; dedupe on the
+# presence of a Hubspot Email url or a new "Notified" checkbox) AND the
+# SLACK_WEBHOOK_URL secret is set. Re-enable the schedule then.
 
 on:
-  schedule:
-    - cron: "17,47 * * * *"   # twice an hour, off-minute
   workflow_dispatch: {}
 
 permissions:

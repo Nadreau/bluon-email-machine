@@ -37,6 +37,17 @@ def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; n
     notion._call("PATCH", f"/blocks/{page_id}/children",
                  {"children": [{"object": "block", "type": "image",
                                 "image": {"type": "file_upload", "file_upload": {"id": fid}}}]})
+    # Also refresh the "Email Image" file property (the report-time snapshot of how the
+    # email sends) so it never goes STALE after a copy edit. It was previously written
+    # once at HubSpot-push time only — which is why some sent rows had no image and one
+    # showed a deleted-but-baked-in double greeting. This is HubSpot-independent (needs
+    # only NOTION_TOKEN + Chrome), so the daily regen self-heals every row's snapshot.
+    try:
+        png = mockup.make_email_png(headline=info["subject"], flow=flow,
+                                    cta=info["cta"], top_hero=top_hero)
+        mockup.attach_file_to_property(page_id, "Email Image", png, "email.png")
+    except Exception as e:
+        print("  email image refresh failed:", e)
     # The Notion "Regenerate Mockup" BUTTON fires the webhook directly with the
     # page id — there is no checkbox flag to clear (the old 'Regen requested'
     # property is gone). Clearing it 400'd and, because _call raises SystemExit,
@@ -73,6 +84,18 @@ def main():
             if regen_page(r["id"]):
                 n += 1
         print(f"filled {n} mockups")
+    elif arg == "--fill-images":
+        # self-heal the "Email Image" snapshot for any row missing it (e.g. emails
+        # cloned/sent outside the machine). regen_page also refreshes it, so a row that
+        # already has one is left to the regen path. Runs daily in the rolling cron.
+        n = 0
+        for r in notion.get_calendar_rows():
+            pr = notion._call("GET", f"/pages/{r['id']}")["properties"]
+            if (pr.get("Email Image", {}) or {}).get("files"):
+                continue
+            if regen_page(r["id"]):
+                n += 1
+        print(f"backfilled {n} Email Image(s)")
     else:
         # a specific page id from the webhook — validate it's a Notion UUID
         import re
