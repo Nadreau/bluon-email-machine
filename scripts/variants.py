@@ -18,6 +18,33 @@ CARRY = ["Audience", "Engagement", "Channel", "Feature", "Type", "Campaign",
          "Status", "Vibe", "Landing Page"]
 
 
+def _common_prefix(strs):
+    if not strs:
+        return ""
+    p = strs[0]
+    for s in strs[1:]:
+        while p and not s.startswith(p):
+            p = p[:-1]
+    return p
+
+
+def _differentiator(subj, prefix, limit=45):
+    """The part of a subject that DIFFERS from its siblings — for a self-describing
+    row title. (The FULL subject still lives in the Subject property + reporting.)"""
+    d = subj[len(prefix):] if prefix and subj.startswith(prefix) else subj
+    d = d.strip(" -–—:!?,.\t").strip() or subj.strip()
+    return (d[:limit].rstrip() + "…") if len(d) > limit else d
+
+
+def _title(stem, audience, letter, diff):
+    """Self-describing variant title: '<Stem> - <Audience> - <Letter>  "<diff>"'.
+    Built only from structured fields (never by re-splitting an existing title), so
+    it's idempotent on re-runs. NO winner/trophy is ever written here — that's the
+    AB Tag formula's job."""
+    head = " - ".join(x for x in (stem, audience, letter) if x)
+    return f'{head}  "{diff}"'[:200]
+
+
 def _variants(pr):
     rt = (pr.get("Subject Variants", {}) or {}).get("rich_text", [])
     text = "".join(x.get("plain_text", "") for x in rt)
@@ -48,7 +75,14 @@ def spawn(base_id):
     # engagement — e.g. the two winbacks — don't collide on an auto-derived name)
     named = "".join(x.get("plain_text", "") for x in (pr.get("Test Group", {}).get("rich_text") or []))
     group = named or f"{sel('Audience')}-{sel('Engagement')}-subj".lower().replace(" ", "")
-    base_title = "".join(x["plain_text"] for x in pr["Email"]["title"]).split(" · ")[0]
+    audience = sel("Audience")
+    # Test Stem = the campaign/series name shown first in the title. Read it from the
+    # property (don't re-split a title); derive + persist a sensible one if unset.
+    stem = "".join(x.get("plain_text", "") for x in (pr.get("Test Stem", {}).get("rich_text") or [])).strip()
+    if not stem:
+        old = "".join(x["plain_text"] for x in pr["Email"]["title"])
+        stem = sel("Campaign") or old.split(" - ")[0].split(" · ")[0].strip() or "Email"
+    diffs = [_differentiator(s, _common_prefix(subjects)) for s in subjects]
     send_date = (pr.get("Send Date", {}).get("date") or {}).get("start")
 
     # which subjects already have a row in this group? (idempotency)
@@ -63,8 +97,9 @@ def spawn(base_id):
         "Testing": {"select": {"name": "Subject Line"}},
         "Variant": {"select": {"name": "A"}},
         "Test Group": {"rich_text": [{"type": "text", "text": {"content": group}}]},
+        "Test Stem": {"rich_text": [{"type": "text", "text": {"content": stem[:200]}}]},
         "Subject": {"rich_text": [{"type": "text", "text": {"content": subjects[0][:200]}}]},
-        "Email": {"title": [{"type": "text", "text": {"content": (base_title + " · Subj A")[:200]}}]},
+        "Email": {"title": [{"type": "text", "text": {"content": _title(stem, audience, "A", diffs[0])}}]},
     }})
     # keep the base's on-page subject heading in sync with Variant A
     st = notion.parse_structure(base_id)
@@ -78,11 +113,12 @@ def spawn(base_id):
         letter = "ABCDEF"[i]
         props = _carry_props(pr)
         props.update({
-            "Email": {"title": [{"type": "text", "text": {"content": (base_title + f" · Subj {letter}")[:200]}}]},
+            "Email": {"title": [{"type": "text", "text": {"content": _title(stem, audience, letter, diffs[i])}}]},
             "Subject": {"rich_text": [{"type": "text", "text": {"content": subj[:200]}}]},
             "Testing": {"select": {"name": "Subject Line"}},
             "Variant": {"select": {"name": letter}},
             "Test Group": {"rich_text": [{"type": "text", "text": {"content": group}}]},
+            "Test Stem": {"rich_text": [{"type": "text", "text": {"content": stem[:200]}}]},
             "Ready to Go": {"checkbox": False},
         })
         if send_date:

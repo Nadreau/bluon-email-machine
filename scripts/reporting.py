@@ -72,13 +72,21 @@ def _num(p, key):
     return (p.get(key, {}) or {}).get("number") or 0
 
 
-def mark_winners():
-    """Within each Test Group, flag the winning variant on per-recipient RATES.
+RECIP_FLOOR = 200      # every variant needs this many recipients before we crown anyone
+CTR_MARGIN = 0.10      # winner's CTR must beat runner-up by >=10% RELATIVE (else "too close")
 
-    A/B sends are often an uneven split (HubSpot sends the bulk to one variant), so
-    raw counts (recipients/clicks) mislead. We judge on the percentage side: CTR
-    (clicks per delivered) is the primary signal — it reflects real engagement and is
-    fair regardless of split — with Open Rate as the tiebreaker."""
+
+def mark_winners():
+    """Within each Test Group, flag the winning variant on per-recipient RATES — but
+    only once the result is TRUSTWORTHY, so a tiny/early sample never crowns a fluke.
+
+    Gates (all must pass, else the whole group is left winner-less = "pending"):
+      • every variant has >= RECIP_FLOOR recipients (kills the 36-recipient fluke),
+      • the leader's CTR beats the runner-up by >= CTR_MARGIN relative (kills noise),
+      • the leader actually has clicks (CTR > 0).
+    Winner is judged on CTR (open-rate tiebreak). We ALWAYS write every row in the
+    group (True on the one winner, False on the rest) — including singleton/typo'd or
+    ungated groups, which all get forced to False so a stale trophy can't linger."""
     groups = {}
     for r in notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]:
         p = r["properties"]
@@ -87,12 +95,21 @@ def mark_winners():
             groups.setdefault(tg, []).append((r["id"], p))
     for tg, rows in groups.items():
         scored = [(pid, p) for pid, p in rows if (p.get("Open Rate", {}) or {}).get("number") is not None]
-        if len(scored) < 2:
-            continue
-        win = max(scored, key=lambda x: (_num(x[1], "CTR"), _num(x[1], "Open Rate")))[0]
-        for pid, _ in rows:
-            notion._call("PATCH", f"/pages/{pid}", {"properties": {"Winner": {"checkbox": pid == win}}})
-        print(f"  winner in '{tg}' by CTR (open-rate tiebreak)")
+        winner = None
+        if len(scored) >= 2 and all(_num(p, "Recipients") >= RECIP_FLOOR for _, p in scored):
+            ranked = sorted(scored, key=lambda x: (_num(x[1], "CTR"), _num(x[1], "Open Rate")), reverse=True)
+            top_ctr, runner_ctr = _num(ranked[0][1], "CTR"), _num(ranked[1][1], "CTR")
+            clear = top_ctr > 0 and (runner_ctr == 0 or (top_ctr - runner_ctr) / runner_ctr >= CTR_MARGIN)
+            if clear:
+                winner = ranked[0][0]
+        for pid, _ in rows:                      # force-write the whole group (no stale True)
+            notion._call("PATCH", f"/pages/{pid}", {"properties": {"Winner": {"checkbox": pid == winner}}})
+        if winner:
+            print(f"  winner crowned in '{tg}' (CTR, open-rate tiebreak)")
+        elif len(scored) >= 2:
+            print(f"  '{tg}' pending — not enough recipients or too close to call")
+        else:
+            print(f"  '{tg}' has <2 scored variants — left winner-less")
 
 
 def main():
