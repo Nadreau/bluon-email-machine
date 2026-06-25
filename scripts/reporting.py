@@ -68,9 +68,17 @@ def refresh(page_id):
     return True
 
 
+def _num(p, key):
+    return (p.get(key, {}) or {}).get("number") or 0
+
+
 def mark_winners():
-    """Within each Test Group, flag the winning variant once stats are in:
-    highest open rate for a subject-line test, highest CTR otherwise."""
+    """Within each Test Group, flag the winning variant on per-recipient RATES.
+
+    A/B sends are often an uneven split (HubSpot sends the bulk to one variant), so
+    raw counts (recipients/clicks) mislead. We judge on the percentage side: CTR
+    (clicks per delivered) is the primary signal — it reflects real engagement and is
+    fair regardless of split — with Open Rate as the tiebreaker."""
     groups = {}
     for r in notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]:
         p = r["properties"]
@@ -81,12 +89,10 @@ def mark_winners():
         scored = [(pid, p) for pid, p in rows if (p.get("Open Rate", {}) or {}).get("number") is not None]
         if len(scored) < 2:
             continue
-        testing = (scored[0][1].get("Testing", {}).get("select") or {}).get("name", "")
-        metric = "Open Rate" if testing == "Subject Line" else "CTR"
-        win = max(scored, key=lambda x: (x[1].get(metric, {}) or {}).get("number") or 0)[0]
+        win = max(scored, key=lambda x: (_num(x[1], "CTR"), _num(x[1], "Open Rate")))[0]
         for pid, _ in rows:
             notion._call("PATCH", f"/pages/{pid}", {"properties": {"Winner": {"checkbox": pid == win}}})
-        print(f"  winner in '{tg}' by {metric}")
+        print(f"  winner in '{tg}' by CTR (open-rate tiebreak)")
 
 
 def main():
