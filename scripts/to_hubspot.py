@@ -50,13 +50,12 @@ HS = "https://api.hubapi.com"
 # Smart landing-page defaults — picked by Campaign, then Audience. A url already set
 # on the row (manual override) always wins. Each entry is either a url, or a dict of
 # {Audience: url, "_default": url} for per-audience routing.
-# NOTE: the real Live Tech Support LP is NOT shipped yet (bluon.com/live-tech-support
-# 404s as of Jun 2026), so LTS routes to the verified Get Demo page until Prouty ships
-# it. When the real URL exists, set "_default" here — and for ServiceTitan use the
-# STANDALONE live-support page, NEVER the ServiceTitan-integration page (hard rule:
-# live tech support is Bluon's standalone product).
+# The Live Tech Support landing page is bluon.com/live-support (live, confirmed by
+# Niko Jun 2026). For ServiceTitan, if a separate standalone-LTS page ever exists use
+# it here — NEVER the ServiceTitan-integration page (hard rule: live tech support is
+# Bluon's standalone product, not part of the ST integration).
 LANDING_PAGES = {
-    "Live Tech Support": {"_default": DEMO_URL},   # TODO(niko): real LTS url from Prouty
+    "Live Tech Support": {"_default": "https://www.bluon.com/live-support"},
 }
 DEFAULT_LP = DEMO_URL
 
