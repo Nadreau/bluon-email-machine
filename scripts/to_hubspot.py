@@ -102,7 +102,7 @@ def body_html(info, flow, uniq=""):
         k = it.get("kind")
         if k == "image":
             n += 1
-            hosted = host_image(it.get("url"), f"body-{uniq}-{n}") or it.get("url")
+            hosted = optimize_and_host(it.get("url"), f"body-{uniq}-{n}") or it.get("url")
             if hosted:
                 out.append(f'<img src="{hosted}" style="width:100%;max-width:560px;height:auto;'
                            f'border-radius:8px;display:block;margin:16px auto" alt="">')
@@ -133,17 +133,17 @@ def host_image(url, name="hero"):
     return None
 
 
-def upload_png(png_path, name="bluon-hero"):
-    """Upload a local PNG to HubSpot Files → hosted url (for the rendered banner)."""
-    boundary = "----bluonhero88"
+def _upload_local(path, filename, content_type):
+    """Upload a local file to HubSpot Files (public) → hosted url."""
+    boundary = "----bluonupload88"
     fields = {"folderPath": "/email-machine",
               "options": json.dumps({"access": "PUBLIC_INDEXABLE", "overwrite": True})}
     body = bytearray()
     for k, v in fields.items():
         body += f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
     body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
-             f'filename="{name}.png"\r\nContent-Type: image/png\r\n\r\n').encode()
-    body += open(png_path, "rb").read()
+             f'filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n').encode()
+    body += open(path, "rb").read()
     body += f"\r\n--{boundary}--\r\n".encode()
     req = urllib.request.Request("https://api.hubapi.com/files/v3/files", data=bytes(body),
         method="POST", headers={"Authorization": f"Bearer {HS_TOKEN}",
@@ -152,8 +152,35 @@ def upload_png(png_path, name="bluon-hero"):
         with urllib.request.urlopen(req, timeout=90) as r:
             return json.load(r).get("url")
     except Exception as e:
-        print("upload_png failed:", e)
+        print("upload failed:", e)
         return None
+
+
+def upload_png(png_path, name="bluon-hero"):
+    """Upload a local PNG to HubSpot Files → hosted url (for the rendered banner)."""
+    return _upload_local(png_path, f"{name}.png", "image/png")
+
+
+def optimize_and_host(url, name, max_w=1200, quality=85):
+    """Download an image, cap it at max_w px wide and JPEG-compress, then host it.
+    Email clients break on huge/heavy images — Gmail's proxy and Outlook (which won't
+    render images wider than ~1728px) show a BROKEN ICON for a full-res multi-MB PNG.
+    So heroes / inline graphics ship as a resized, compressed JPEG (~100KB), never the
+    full-size original. Falls back to a straight import if optimization isn't possible."""
+    try:
+        import io
+        from PIL import Image
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        raw = urllib.request.urlopen(req, timeout=60).read()
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        if im.width > max_w:
+            im = im.resize((max_w, round(im.height * max_w / im.width)), Image.LANCZOS)
+        tmp = tempfile.mktemp(suffix=".jpg")
+        im.save(tmp, "JPEG", quality=quality, optimize=True, progressive=True)
+        return _upload_local(tmp, f"{name}.jpg", "image/jpeg")
+    except Exception as e:
+        print("optimize_and_host failed, importing original instead:", e)
+        return host_image(url, name)
 
 
 def host_top_hero(top_hero, info, uniq):
@@ -161,8 +188,10 @@ def host_top_hero(top_hero, info, uniq):
     ("video"|"image"|"default", src, link): video → hosted thumbnail + watch link;
     image → hosted image; default → the rendered branded Bluon banner."""
     kind, src, link = top_hero
-    if kind in ("video", "image"):
-        return (host_image(src, f"hero-{uniq}") or src, link)
+    if kind == "video":
+        return (host_image(src, f"hero-{uniq}") or src, link)   # small YT thumbnail, keep as-is
+    if kind == "image":
+        return (optimize_and_host(src, f"hero-{uniq}") or src, link)   # resize+compress for email
     try:
         png = mockup.render_png(mockup.hero_banner_html(info["subject"]),
                                 tempfile.mktemp(suffix=".png"))
