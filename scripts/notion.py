@@ -168,6 +168,16 @@ def _week_of(send_date):
         return None
 
 
+def label_variants(text):
+    """Store subject variants in Tanner's format — 'A: …', 'B: …', 'C: …' (one per
+    line). Idempotent: strips any existing leading letter label first, drops blanks,
+    re-labels in order. The spawner (variants._variants) strips these labels back off
+    when it fans the test out, so this is display-only and never affects the subjects."""
+    lines = [re.sub(r"^[A-Fa-f]\s*[:.)\-]\s*", "", l.strip()).strip() for l in (text or "").splitlines()]
+    lines = [l for l in lines if l]
+    return "\n".join(f"{chr(65 + i)}: {l}" for i, l in enumerate(lines))
+
+
 # A campaign hero image checked into the repo. When present, every generated draft
 # gets it pre-placed as the top hero (e.g. the Live Tech Support Wave 2 portal still
 # of Brian & Joel). Delete/rename this file to end the campaign and go back to the
@@ -211,7 +221,7 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
     if vibe:         props["Vibe"] = sel(vibe)
     if test_group:   props["Test Group"] = {"rich_text": [{"type": "text", "text": {"content": test_group[:200]}}]}
     if landing_page: props["Landing Page"] = {"url": landing_page}
-    if subject_variants: props["Subject Variants"] = {"rich_text": [{"type": "text", "text": {"content": subject_variants[:1900]}}]}
+    if subject_variants: props["Subject Variants"] = {"rich_text": [{"type": "text", "text": {"content": label_variants(subject_variants)[:1900]}}]}
     if send_date:
         props["Send Date"] = {"date": {"start": send_date}}
     page = _call("POST", "/pages", {
