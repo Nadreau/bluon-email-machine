@@ -32,7 +32,7 @@ jobs:
           else
             python scripts/reporting.py
           fi
-      - name: Refresh the Email Reporting ledger (permanent, decoupled from the calendar)
+      - name: Pull sent emails into the calendar (incl HubSpot native A/B variants) + channel-tag
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}

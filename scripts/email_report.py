@@ -1,21 +1,21 @@
-"""Email Reporting ledger — pulls every email that ACTUALLY SENT straight from HubSpot
-(the source of truth), INCLUDING native A/B-test variants, fully decoupled from the
-planning calendar. Nothing in the calendar can hide, collapse, or delete a real send.
+"""Reporting lives IN the Email Calendar (not a separate DB). Every SENT email — including
+HubSpot native A/B-test variants — is a calendar row linked to its HubSpot email, with live
+stats + Channel, so the calendar's reporting view shows it with the mockups/items intact.
 
 HubSpot native A/B = two email objects: the 'A' send is state PUBLISHED_AB, the 'B' is
-PUBLISHED_AB_VARIANT; HubSpot creates them with consecutive primaryEmailCampaignId
-(B = A + 2), which is how we pair them into one Test Group. Winner = higher open rate.
+PUBLISHED_AB_VARIANT (created with B's primaryEmailCampaignId = A's + 2). The B never existed
+as a calendar row, so we CREATE it (Variant B, same Test Group as its A, Status=Sent, linked to
+the HubSpot B). To avoid flooding the calendar we ONLY touch tests whose A is already a calendar
+row (i.e. emails the machine planned); other HubSpot sends are left alone.
 
   python scripts/email_report.py
 """
-import os, re, json, datetime, urllib.request, urllib.error
-from collections import defaultdict
+import os, re, json, datetime, urllib.request
 import notion
 
-REPORT_DB = "38e576a5-c12d-81fc-bed8-e9cd1fe94d8f"
+CAL = notion.CALENDAR_DB_ID
 HS = (os.environ.get("HUBSPOT_TOKEN") or open(os.path.expanduser("~/.config/hubspot/api_key")).read()).strip()
-WINDOW_DAYS = 75
-_EID = re.compile(r"/edit/(\d+)/")
+WINDOW_DAYS = 90
 
 
 def _hs(url):
@@ -23,7 +23,6 @@ def _hs(url):
 
 
 def sent_emails():
-    """Marketing emails that actually went out in the last WINDOW_DAYS (state PUBLISHED*, sent > 0)."""
     cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=WINDOW_DAYS)).date().isoformat()
     out = []; after = None
     for _ in range(12):
@@ -48,24 +47,28 @@ def sent_emails():
 def stats_props(e):
     s = e.get("stats", {}) or {}; c = s.get("counters", {}) or {}; r = s.get("ratios", {}) or {}
     pct = lambda v: round((v or 0) / 100.0, 5)
-    return {
-        "Recipients":   {"number": c.get("delivered", c.get("sent", 0))},
-        "Delivery Rate":{"number": pct(r.get("deliveredratio"))},
-        "Open Rate":    {"number": pct(r.get("openratio"))},
-        "CTR":          {"number": pct(r.get("clickratio"))},
-        "Clicks":       {"number": c.get("click", 0)},
-        "Bounce Rate":  {"number": pct(r.get("bounceratio"))},
-        "Unsubscribes": {"number": c.get("unsubscribed", 0)},
-    }
+    return {"Recipients": {"number": c.get("delivered", c.get("sent", 0))},
+            "Delivery Rate": {"number": pct(r.get("deliveredratio"))},
+            "Open Rate": {"number": pct(r.get("openratio"))}, "CTR": {"number": pct(r.get("clickratio"))},
+            "Clicks": {"number": c.get("click", 0)}, "Bounce Rate": {"number": pct(r.get("bounceratio"))},
+            "Unsubscribes": {"number": c.get("unsubscribed", 0)}}
 
 
-def existing_index():
-    idx = {}
-    for r in notion._call("POST", f"/databases/{REPORT_DB}/query", {"page_size": 100})["results"]:
-        m = _EID.search((r["properties"].get("HubSpot Email", {}) or {}).get("url") or "")
+def _txt(r): return "".join(x.get("plain_text", "") for x in (r or []))
+def _sel(p, k): return ((p.get(k, {}) or {}).get("select") or {}).get("name")
+
+
+def cal_index():
+    """hubspot_id -> {id, tg, audience, engagement} for calendar rows linked to a HubSpot email."""
+    out = {}
+    for r in notion._call("POST", f"/databases/{CAL}/query", {"page_size": 100})["results"]:
+        m = re.search(r"/edit/(\d+)/", (r["properties"].get("Hubspot Email", {}) or {}).get("url") or "")
         if m:
-            idx[m.group(1)] = r["id"]
-    return idx
+            p = r["properties"]
+            out[m.group(1)] = {"id": r["id"], "tg": _txt((p.get("Test Group", {}) or {}).get("rich_text")),
+                               "audience": _sel(p, "Audience"), "engagement": _sel(p, "Engagement"),
+                               "title": _txt(p.get("Email", {}).get("title"))}
+    return out
 
 
 def run():
@@ -74,50 +77,44 @@ def run():
         try: return int(e.get("primaryEmailCampaignId"))
         except (TypeError, ValueError): return None
     by_camp = {c: e for e in emails for c in [_cid(e)] if c is not None}
-
-    def variant_group(e):
-        st = e.get("state", "")
-        if st == "PUBLISHED_AB_VARIANT":
-            cid = _cid(e)
-            a = by_camp.get(cid - 2) if cid is not None else None         # its paired 'A' send (consecutive campaign id)
-            return "B", ((a or e).get("name") or "")[:140]
-        if st == "PUBLISHED_AB":
-            return "A", (e.get("name") or "")[:140]
-        return None, (e.get("name") or "")[:140]                          # single send (no A/B)
-
-    idx = existing_index(); tracked = []
+    cal = cal_index()
+    made = updated = 0
     for e in emails:
-        eid = str(e.get("id"))
-        var, group = variant_group(e)
+        eid = str(e["id"]); st = e.get("state", "")
+        if st == "PUBLISHED_AB_VARIANT":
+            var = "B"; paired = by_camp.get((_cid(e) or 0) - 2)   # its 'A'
+        elif st == "PUBLISHED_AB":
+            var = "A"; paired = by_camp.get((_cid(e) or 0) + 2)   # its 'B'
+        else:
+            var = None; paired = None
+        paired_eid = str(paired["id"]) if paired else None
+        # this test is "planned" if EITHER variant already has a calendar row (link can point to A or B)
+        anchor = cal.get(eid) or (cal.get(paired_eid) if paired_eid else None)
+        if not anchor:
+            continue
+        tg = anchor["tg"] or (e.get("name", ""))[:120]
         props = stats_props(e)
         props.update({
-            "Email":   {"title": [{"type": "text", "text": {"content": (e.get("name") or "")[:200]}}]},
+            "Email": {"title": [{"type": "text", "text": {"content": (e.get("name") or "")[:200]}}]},
+            "Test Group": {"rich_text": [{"type": "text", "text": {"content": (tg or "")[:200]}}]},
+            "Channel": {"select": {"name": "HubSpot"}},
+            "Status": {"select": {"name": "Sent"}},
             "Subject": {"rich_text": [{"type": "text", "text": {"content": (e.get("subject") or "")[:200]}}]},
-            "Test Group": {"rich_text": [{"type": "text", "text": {"content": group}}]},
-            "HubSpot Email": {"url": f"https://app.hubspot.com/email/6885872/edit/{eid}/content"},
+            "Hubspot Email": {"url": f"https://app.hubspot.com/email/6885872/edit/{eid}/content"},
         })
-        if var:
-            props["Variant"] = {"select": {"name": var}}
+        if var: props["Variant"] = {"select": {"name": var}}
+        if anchor.get("audience"): props["Audience"] = {"select": {"name": anchor["audience"]}}
+        if anchor.get("engagement"): props["Engagement"] = {"select": {"name": anchor["engagement"]}}
         pd = e.get("publishDate")
-        if pd:
-            props["Send Date"] = {"date": {"start": pd[:10]}}
-        pid = idx.get(eid)
-        if pid:
-            notion._call("PATCH", f"/pages/{pid}", {"properties": props})
+        if pd: props["Send Date"] = {"date": {"start": pd[:10]}}
+        existing = cal.get(eid)   # a row already linked to THIS email's id?
+        if existing:
+            notion._call("PATCH", f"/pages/{existing['id']}", {"properties": props}); updated += 1
+            print(f"  [{var}] upd  {(e.get('name') or '')[:46]}")
         else:
-            pid = notion._call("POST", "/pages", {"parent": {"database_id": REPORT_DB}, "properties": props})["id"]
-            idx[eid] = pid
-        tracked.append((pid, group, props["Open Rate"]["number"], props["CTR"]["number"]))
-        print(f"  ✓ [{var or '-'}] {(e.get('name') or '')[:40]:40} open {props['Open Rate']['number']*100:4.1f}% ctr {props['CTR']['number']*100:.1f}%")
-    # Winner per Test Group (only where 2+ variants ran), by open rate (CTR tiebreak)
-    groups = defaultdict(list)
-    for pid, group, opn, ctr in tracked:
-        groups[group].append((pid, opn, ctr))
-    for g, members in groups.items():
-        win = max(members, key=lambda x: (x[1], x[2]))[0] if len(members) >= 2 else None
-        for pid, _, _ in members:
-            notion._call("PATCH", f"/pages/{pid}", {"properties": {"Winner": {"checkbox": pid == win}}})
-    print(f"ledger: {len(tracked)} sent email(s) → https://www.notion.so/{REPORT_DB.replace('-','')}")
+            notion._call("POST", "/pages", {"parent": {"database_id": CAL}, "properties": props}); made += 1
+            print(f"  [{var}] NEW  {(e.get('name') or '')[:46]}")
+    print(f"calendar reporting refreshed: {made} new variant row(s), {updated} updated")
 
 
 if __name__ == "__main__":
