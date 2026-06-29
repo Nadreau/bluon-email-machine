@@ -42,10 +42,11 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
         run: python scripts/hubspot_report.py
-      - name: Mirror Anevo sends (shared Google Sheet) into the Email Reporting DB
+      - name: Feed Anevo sends (LIVE Smartlead API) into the Email Reporting DB
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
-        run: python scripts/anevo_report.py   # data only; thumbnails already rendered, kept on update
+          SMARTLEAD_API_KEY: ${{ secrets.SMARTLEAD_API_KEY }}
+        run: python scripts/anevo_report.py
       - name: Rebuild the Email Reporting dashboard page (week → email → variation)
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}

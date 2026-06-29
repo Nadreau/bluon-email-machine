@@ -1,71 +1,65 @@
-"""Pull Anevo send stats from their shared Google Sheet into the Email Reporting DB.
+"""Anevo email reporting → the "Email Reporting — Automated" DB, LIVE from the Smartlead API.
 
-Anevo (our capacity-limited email partner) logs every send in a Google Sheet that's
-link-shared, so a CSV export reads with no auth. This mirrors those sends into the
-same "Email Reporting — Automated" DB as our HubSpot sends, tagged Source=Anevo, so
-all email reporting — ours and Anevo's — lives in one place.
+Anevo (our cold-email partner) runs on Smartlead. This pulls each campaign's real analytics
+(sent / open / click / reply / bounce / unsub / interested-leads) and upserts one row per
+campaign tagged Source=Anevo, so HubSpot + Anevo email reporting live in one DB. Replaces the
+old manual-Google-Sheet source now that we have API access.
 
-Idempotent: each row is keyed by (Source=Anevo, Subject); re-running updates in place.
+Each Smartlead "campaign" is split per inbox provider ([... (Gmail)] / (Outlook) / (Others));
+we combine those splits into one logical campaign. "Standard Subsequence" (DRAFTED) follow-ups
+are skipped. Stale Anevo rows from the old sheet era are archived.
 
-METRIC NOTE: Anevo's sheet reports "Click Rate" as click-TO-OPEN (clicks / opens).
-We store CTR = clicks / SENT to match HubSpot's clicks/delivered, so the CTR column
-means the same thing on every row. (Anevo's own headline % will read much higher than
-our CTR column for that reason — they're different denominators.) Each row's page body
-records Anevo's native open/click rates verbatim so nothing the sheet says is lost.
+Smartlead is behind Cloudflare — MUST send a User-Agent or it 403s (error 1010). Rate limit
+60 req/min. Key from SMARTLEAD_API_KEY env (CI) or ~/.config/smartlead/api_key.
 
-  python scripts/anevo_report.py            # pull + upsert rows
-  python scripts/anevo_report.py --images   # also render a subject-card thumbnail
+  python scripts/anevo_report.py
 """
-import sys, re, csv, io, urllib.request
+import os, re, json, urllib.request, urllib.error, time
 import notion
 
 REPORTING_DB = "38e576a5-c12d-81b7-a5a8-d2e1e2f5433a"
-SHEET_ID = "1mGt8F1KjuEEVZwMqR00fS56wSE76mTmNEElkigOGaYE"
-GID = "642705231"
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
-
-LETTERS = "ABCDEF"
+KEY = (os.environ.get("SMARTLEAD_API_KEY") or open(os.path.expanduser("~/.config/smartlead/api_key")).read()).strip()
+BASE = "https://server.smartlead.ai/api/v1"
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 
-def _fetch_rows():
-    req = urllib.request.Request(CSV_URL, headers={"User-Agent": "Mozilla/5.0"})
-    text = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
-    return [r for r in csv.DictReader(io.StringIO(text))
-            if (r.get("Subject Line") or "").strip()]
-
-
-def _count_pct(cell):
-    """'1632 (36.9%)' -> (1632, 0.369). Tolerates a stray ')' and missing pieces."""
-    cell = (cell or "").strip()
-    m = re.search(r"([\d,]+)", cell)
-    count = int(m.group(1).replace(",", "")) if m else None
-    p = re.search(r"([\d.]+)\s*%", cell)
-    pct = float(p.group(1)) / 100 if p else None
-    return count, pct
-
-
-def _audience(campaign):
-    c = (campaign or "").lower()
-    for name in ("ServiceTitan", "Residential", "Commercial", "Churned"):
-        if name.lower() in c:
-            return name
+def sl(path):
+    sep = "&" if "?" in path else "?"
+    req = urllib.request.Request(f"{BASE}{path}{sep}api_key={KEY}", headers={"User-Agent": UA})
+    for _ in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=45) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                time.sleep(2); continue
+            raise
     return None
 
 
-def _send_date(campaign):
-    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", campaign or "")
+def _audience(name):
+    n = (name or "").lower()
+    for a in ("ServiceTitan", "Residential", "Commercial", "Churned", "Texas"):
+        if a.lower() in n:
+            return a
+    return None
+
+
+def _send_date(name):
+    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", name or "")
     if not m:
         return None
-    mo, d, y = m.groups()
-    y = int(y)
-    y = y + 2000 if y < 100 else y
+    mo, d, y = m.groups(); y = int(y); y = y + 2000 if y < 100 else y
     return f"{y:04d}-{int(mo):02d}-{int(d):02d}"
 
 
+def _base_name(name):
+    """Combine the per-inbox splits: strip a trailing '(Gmail)' / '(Outlook)' / '(Others)'."""
+    return re.sub(r"\s*\((Gmail|Outlook|Others)\)\s*$", "", (name or "").strip())
+
+
 def _existing_anevo():
-    """{subject -> page_id} for rows already in the DB with Source=Anevo (idempotency)."""
-    out = {}
-    cur = None
+    out = {}; cur = None
     while True:
         body = {"page_size": 100}
         if cur:
@@ -78,101 +72,69 @@ def _existing_anevo():
                 out[subj.strip()] = r["id"]
         if not res.get("has_more"):
             break
-        cur = res["get_next_cursor"] if "get_next_cursor" in res else res.get("next_cursor")
+        cur = res.get("next_cursor")
     return out
 
 
-def run(images=False):
-    rows = _fetch_rows()
-    if not rows:
-        print("Anevo sheet returned no rows.")
-        return
-    # group sends that belong to the same test (same campaign + email name) so the
-    # variants share a Test value and get A/B letters in sheet order
-    groups = {}
-    for r in rows:
-        key = ((r.get("Campaign") or "").strip(), (r.get("Email") or "").strip())
-        groups.setdefault(key, []).append(r)
+def run():
+    camps = sl("/campaigns")
+    camps = camps if isinstance(camps, list) else (camps or {}).get("data", [])
+    real = [c for c in camps if c.get("status") in ("ACTIVE", "COMPLETED")
+            and "subsequence" not in str(c.get("name", "")).lower()]
+    print(f"Smartlead: {len(real)} active/completed campaigns")
+
+    agg = {}
+    for c in real:
+        a = sl(f"/campaigns/{c['id']}/analytics")
+        if not isinstance(a, dict):
+            continue
+        iv = lambda k: int(float(a.get(k, 0) or 0))
+        base = _base_name(a.get("name") or c.get("name"))
+        g = agg.setdefault(base, {"sent": 0, "open": 0, "click": 0, "reply": 0, "bounce": 0, "unsub": 0, "interested": 0})
+        g["sent"] += iv("sent_count"); g["open"] += iv("open_count"); g["click"] += iv("click_count")
+        g["reply"] += iv("reply_count"); g["bounce"] += iv("bounce_count"); g["unsub"] += iv("unsubscribed_count")
+        g["interested"] += int((a.get("campaign_lead_stats") or {}).get("interested", 0) or 0)
 
     existing = _existing_anevo()
-    for (campaign, email_name), members in groups.items():
-        aud = _audience(campaign)
-        date = _send_date(campaign)
-        md = re.search(r"(\d{1,2}/\d{1,2})", campaign or "")
-        test = f"Anevo · {aud or 'Send'}" + (f" {md.group(1)}" if md else "")
-        multi = len(members) > 1
-        for i, r in enumerate(members):
-            subj = (r.get("Subject Line") or "").strip()
-            sent, _ = _count_pct(r.get("Total # Sent"))
-            sent = sent or _count_pct(r.get("Total # Sent") or "")[0]
-            opens, open_pct = _count_pct(r.get("Open Rate"))
-            clicks, click_pct = _count_pct(r.get("Click Rate"))  # click_pct = Anevo CTOR
-            open_rate = (opens / sent) if (opens and sent) else open_pct
-            ctr = (clicks / sent) if (clicks and sent) else None
-            letter = LETTERS[i] if multi else None
+    keep = set()
+    for base, g in sorted(agg.items(), key=lambda kv: -kv[1]["sent"]):
+        sent = g["sent"]
+        if sent <= 0:
+            continue
+        aud = _audience(base); date = _send_date(base)
+        props = {
+            "Name": {"title": [{"type": "text", "text": {"content": ("Anevo — " + base.replace("[BLUON] ", ""))[:200]}}]},
+            "Source": {"select": {"name": "Anevo"}},
+            "Test": {"select": {"name": f"Anevo · {aud or 'Send'}"}},
+            "Subject": {"rich_text": [{"type": "text", "text": {"content": base[:1900]}}]},
+            "Recipients": {"number": sent},
+            "Open Rate": {"number": round(g["open"] / sent, 4)},
+            "CTR": {"number": round(g["click"] / sent, 4)},
+            "Clicks": {"number": g["click"]},
+            "Replies": {"number": g["reply"]},
+            "Leads (Interested)": {"number": g["interested"]},
+            "Bounce Rate": {"number": round(g["bounce"] / sent, 4)},
+            "Unsubscribes": {"number": g["unsub"]},
+        }
+        if aud:
+            props["Audience"] = {"select": {"name": aud}}
+        if date:
+            props["Sent"] = {"date": {"start": date}}
+        key = base.strip(); keep.add(key)
+        if key in existing:
+            notion._call("PATCH", f"/pages/{existing[key]}", {"properties": props})
+            print(f"  ~ {base[:48]:50} sent {sent:>6}  reply {g['reply']:>3}  leads {g['interested']:>2}")
+        else:
+            notion._call("POST", "/pages", {"parent": {"database_id": REPORTING_DB}, "properties": props})
+            print(f"  + {base[:48]:50} sent {sent:>6}  reply {g['reply']:>3}  leads {g['interested']:>2}")
 
-            props = {
-                "Name": {"title": [{"type": "text", "text": {
-                    "content": f"Anevo — {aud or 'Send'}" + (f" — {letter}" if letter else "")}}]},
-                "Source": {"select": {"name": "Anevo"}},
-                "Test": {"select": {"name": test}},
-                "Subject": {"rich_text": [{"type": "text", "text": {"content": subj[:1900]}}]},
-            }
-            if letter:
-                props["Variant"] = {"select": {"name": letter}}
-            if aud:
-                props["Audience"] = {"select": {"name": aud}}
-            if sent is not None:
-                props["Recipients"] = {"number": sent}
-            if open_rate is not None:
-                props["Open Rate"] = {"number": round(open_rate, 4)}
-            if ctr is not None:
-                props["CTR"] = {"number": round(ctr, 4)}
-            if clicks is not None:
-                props["Clicks"] = {"number": clicks}
-            if date:
-                props["Sent"] = {"date": {"start": date}}
-
-            pid = existing.get(subj.strip())
-            if pid:
-                notion._call("PATCH", f"/pages/{pid}", {"properties": props})
-                print(f"  ~ updated  [{test} {letter or ''}] {subj[:50]}")
-            else:
-                page = notion._call("POST", "/pages",
-                                    {"parent": {"database_id": REPORTING_DB}, "properties": props})
-                pid = page["id"]
-                # preserve Anevo's native numbers verbatim (their click rate = CTOR)
-                note = (f"Anevo native — Sent {sent}, Open {opens or '?'} "
-                        f"({round((open_pct or 0)*100,1)}%), Click {clicks or '?'} "
-                        f"({round((click_pct or 0)*100,1)}% click-to-open). "
-                        f"CTR column = clicks/sent = {round((ctr or 0)*100,2)}%.")
-                notion._call("PATCH", f"/blocks/{pid}/children", {"children": [{
-                    "object": "block", "type": "callout",
-                    "callout": {"icon": {"emoji": "📬"},
-                                "rich_text": [{"type": "text", "text": {"content": note}}]}}]})
-                print(f"  + added    [{test} {letter or ''}] {subj[:50]}")
-                existing[subj.strip()] = pid
-
-            if images:
-                try:
-                    import mockup
-                    png = mockup.make_email_png(
-                        headline=subj,
-                        flow=[{"kind": "para", "text": f"Sent by Anevo to the {aud or 'Bluon'} segment "
-                                                       f"({(r.get('Audience/Segment') or '').strip()})."}],
-                        cta="Bluon for Business",
-                        cta_url="https://www.bluon.com")
-                    mockup.attach_file_to_property(pid, "Email Image", png, "anevo.png")
-                    print("      · thumbnail rendered")
-                except Exception as e:
-                    print("      · thumbnail skipped:", e)
-
-        # report (don't auto-crown — the winner is metric-dependent for Anevo)
-        if multi:
-            cmp = [(LETTERS[i], (_count_pct(m.get('Click Rate'))[0] or 0)) for i, m in enumerate(members)]
-            print(f"  · {test}: clicks " + ", ".join(f"{l}={c}" for l, c in cmp)
-                  + "  (winner left unset — Anevo's sheet judges click-to-open, not CTR)")
+    # archive stale Anevo rows left over from the old manual-sheet source
+    for subj, pid in existing.items():
+        if subj not in keep:
+            notion._call("PATCH", f"/pages/{pid}", {"archived": True})
+            print(f"  - archived stale (sheet-era): {subj[:50]}")
+    print(f"Anevo reporting refreshed: {len(keep)} live campaigns")
 
 
 if __name__ == "__main__":
-    run(images="--images" in sys.argv)
+    run()
