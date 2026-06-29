@@ -1,0 +1,245 @@
+"""Render the "📊 Email Reporting" dashboard page from the Email Reporting DB.
+
+Mirrors the Bluon ads reporting style (the Meta/Google dashboards): one clean page,
+broken down into obvious sections with plain-English text between them, grouped
+WEEK -> EMAIL -> VARIATION, each variation showing its mockup. The page is fully
+WIPED AND REBUILT every run (the Google-ads-dashboard pattern) so the organization
+never drifts — edit THIS SCRIPT, not the page.
+
+Source of truth = the Email Reporting DB (one row per sent variant, HubSpot + Anevo).
+This script only READS that DB and only WRITES the dashboard page; it never touches
+the DB or the calendar.
+
+  python scripts/reporting_page.py
+"""
+import sys, datetime, tempfile, urllib.request
+import notion, mockup
+
+REPORT_PAGE = "38e576a5-c12d-8187-9c21-f82642db1fa1"      # the rendered dashboard page
+SOURCE_DB   = "38e576a5-c12d-81b7-a5a8-d2e1e2f5433a"      # Email Reporting — Automated (raw rows)
+MAX_WEEKS   = 10                                          # cap visible weeks (newest first); logs if it truncates
+
+GRAY = "gray_background"
+
+
+# ---------- small helpers ----------
+def rt(s, *, bold=False, italic=False, code=False, color=None):
+    o = {"type": "text", "text": {"content": s}}
+    ann = {}
+    if bold: ann["bold"] = True
+    if italic: ann["italic"] = True
+    if code: ann["code"] = True
+    if color: ann["color"] = color
+    if ann: o["annotations"] = ann
+    return o
+
+def pctf(x):
+    return "—" if x is None else f"{x*100:.1f}%"
+
+def comma(n):
+    return "—" if n is None else f"{int(n):,}"
+
+def kfmt(n):
+    n = n or 0
+    return f"{n/1000:.1f}K" if n >= 1000 else str(int(n))
+
+
+def _num(pr, k):
+    return pr.get(k, {}).get("number")
+
+def _sel(pr, k):
+    return (pr.get(k, {}).get("select") or {}).get("name")
+
+def _txt(pr, k):
+    return "".join(x.get("plain_text", "") for x in (pr.get(k, {}).get("rich_text") or []))
+
+def _img_url(pr):
+    files = (pr.get("Email Image", {}) or {}).get("files", [])
+    if not files:
+        return None
+    f = files[0]
+    return (f.get("file") or {}).get("url") or (f.get("external") or {}).get("url")
+
+
+# ---------- data ----------
+def load_rows():
+    rows, cur = [], None
+    while True:
+        body = {"page_size": 100}
+        if cur:
+            body["start_cursor"] = cur
+        res = notion._call("POST", f"/databases/{SOURCE_DB}/query", body)
+        for r in res["results"]:
+            pr = r["properties"]
+            sent = (pr.get("Sent", {}).get("date") or {}).get("start")
+            rows.append({
+                "source": _sel(pr, "Source") or "HubSpot",
+                "test": _sel(pr, "Test") or _txt(pr, "Name") or "Email",
+                "audience": _sel(pr, "Audience") or "",
+                "variant": _sel(pr, "Variant") or "",
+                "subject": _txt(pr, "Subject") or _txt(pr, "Name"),
+                "open": _num(pr, "Open Rate"),
+                "ctr": _num(pr, "CTR"),
+                "recipients": _num(pr, "Recipients"),
+                "clicks": _num(pr, "Clicks"),
+                "winner": bool(pr.get("Winner", {}).get("checkbox")),
+                "link": pr.get("HubSpot Link", {}).get("url"),
+                "img": _img_url(pr),
+                "sent": sent,
+                "week": notion._week_of(sent) if sent else "Undated",
+                "wk_key": sent[:10] if sent else "0000",
+            })
+        if not res.get("has_more"):
+            break
+        cur = res.get("next_cursor")
+    return rows
+
+
+def group(rows):
+    """week -> {wk_key, emails: {test -> [variants...]}}"""
+    weeks = {}
+    for r in rows:
+        w = weeks.setdefault(r["week"], {"wk_key": r["wk_key"], "emails": {}})
+        w["wk_key"] = max(w["wk_key"], r["wk_key"])
+        w["emails"].setdefault(r["test"], []).append(r)
+    for w in weeks.values():
+        for vs in w["emails"].values():
+            vs.sort(key=lambda r: r["variant"] or "Z")
+    return weeks
+
+
+# ---------- page blocks ----------
+def clear_page(page_id):
+    cur = None
+    while True:
+        q = f"/blocks/{page_id}/children?page_size=100" + (f"&start_cursor={cur}" if cur else "")
+        d = notion._call("GET", q)
+        for b in d["results"]:
+            if not b.get("archived") and not b.get("in_trash"):
+                notion._call("PATCH", f"/blocks/{b['id']}", {"archived": True})
+        if not d.get("has_more"):
+            break
+        cur = d.get("next_cursor")
+
+
+def _reupload(url):
+    """Notion-hosted file URLs are signed/expiring — re-host the mockup so it
+    survives the daily wipe. Returns a file_upload id, or None on failure."""
+    if not url:
+        return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        data = urllib.request.urlopen(req, timeout=60).read()
+        p = tempfile.mktemp(suffix=".png")
+        open(p, "wb").write(data)
+        return mockup.upload_png(p, "variant.png")
+    except Exception as e:
+        print("    img reupload failed:", e)
+        return None
+
+
+def _badge(source):
+    return "✉️ HubSpot · Engaged" if source == "HubSpot" else "📬 Anevo · Unengaged"
+
+
+def _email_callout(test, variants):
+    """Plain, non-competitive read: both versions sent, here's which is doing better.
+    No trophy / 'winner' / settle-countdown language — just the comparison."""
+    src = variants[0]["source"]
+    if src == "Anevo":
+        fmt = lambda v: f"{v['variant']} {pctf(v['open'])} open"
+        keyf = lambda v: (v["open"] or 0)
+        note = "   (Anevo reports click-to-open, not CTR — shown separately)"
+    else:
+        fmt = lambda v: f"{v['variant']} {pctf(v['ctr'])} CTR"
+        keyf = lambda v: (v["ctr"] or 0, v["open"] or 0)
+        note = None
+    ranked = sorted(variants, key=keyf, reverse=True)
+    lead = "Both versions sent.  " if len(variants) == 2 else "All versions sent.  "
+    parts = [rt(lead, bold=True)]
+    if len(variants) >= 2 and keyf(ranked[0]) != keyf(ranked[1]):
+        parts += [rt(f"{ranked[0]['variant']} is doing better so far — "),
+                  rt(" vs ".join(fmt(v) for v in ranked))]
+    else:
+        parts += [rt("performing about the same — "),
+                  rt(" · ".join(fmt(v) for v in variants))]
+    if note:
+        parts.append(rt(note, color="gray"))
+    return {"object": "block", "type": "callout",
+            "callout": {"icon": {"emoji": "📊"}, "color": GRAY, "rich_text": parts}}
+
+
+def _variant_caption(v):
+    head = [rt(f"{v['variant']}", bold=True), rt(f"  {v['subject']}")]
+    stats = rt(f"\n{pctf(v['open'])} open · {pctf(v['ctr'])} CTR · {comma(v['recipients'])} sent · {v['clicks'] or 0} clicks", color="gray")
+    return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": head + [stats]}}
+
+
+def _variants_block(variants):
+    """A column per variant: mockup image + caption. Falls back to stacked blocks
+    for a single variant (column_list needs >=2 columns)."""
+    cols = []
+    for v in variants:
+        kids = []
+        fid = _reupload(v["img"])
+        if fid:
+            kids.append({"object": "block", "type": "image",
+                         "image": {"type": "file_upload", "file_upload": {"id": fid}}})
+        kids.append(_variant_caption(v))
+        cols.append({"object": "block", "type": "column", "column": {"children": kids}})
+    if len(cols) >= 2:
+        return [{"object": "block", "type": "column_list", "column_list": {"children": cols}}]
+    # single variant — no column_list
+    return cols[0]["column"]["children"]
+
+
+def build():
+    rows = load_rows()
+    if not rows:
+        print("no rows in source DB; nothing to render")
+        return
+    weeks = group(rows)
+    order = sorted(weeks.items(), key=lambda kv: kv[1]["wk_key"], reverse=True)
+    if len(order) > MAX_WEEKS:
+        print(f"NOTE: showing newest {MAX_WEEKS} of {len(order)} weeks (older weeks live in the source DB).")
+        order = order[:MAX_WEEKS]
+
+    # short, honest header — counts only (no aggregate "people reached"; A/B sample
+    # structure + Anevo per-variant lists make a unique-people total unreliable)
+    n_emails = sum(len(wk["emails"]) for _, wk in order)
+    ts = datetime.datetime.now().strftime("%b %-d")
+
+    clear_page(REPORT_PAGE)
+
+    top = [
+        {"object": "block", "type": "callout",
+         "callout": {"icon": {"emoji": "📬"}, "color": "blue_background", "rich_text": [
+             rt("Every email we've sent, newest first — both A/B versions side by side."),
+             rt(f"\n{n_emails} emails · {len(rows)} versions · {len(order)} weeks · updated {ts}", color="gray"),
+         ]}},
+    ]
+    notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": top})
+
+    for week, wk in order:
+        emails = wk["emails"]
+        notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
+            {"object": "block", "type": "divider", "divider": {}},
+            {"object": "block", "type": "heading_1", "heading_1": {"rich_text": [
+                rt(f"Week of {week}"),
+                rt(f"      {len(emails)} email{'s' if len(emails) != 1 else ''}", color="gray"),
+            ]}},
+        ]})
+        for test, variants in sorted(emails.items()):
+            src = variants[0]["source"]
+            notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
+                {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+                    rt(test), rt(f"      {_badge(src)}", color="gray")]}},
+                _email_callout(test, variants),
+            ]})
+            notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": _variants_block(variants)})
+            print(f"  {week} · {test}: {len(variants)} variants")
+    print("dashboard rebuilt:", REPORT_PAGE)
+
+
+if __name__ == "__main__":
+    build()

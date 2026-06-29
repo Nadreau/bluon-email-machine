@@ -37,3 +37,16 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
         run: python scripts/email_report.py
+      - name: Feed HubSpot sends into the Email Reporting DB (discover + refresh + crown)
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: python scripts/hubspot_report.py
+      - name: Mirror Anevo sends (shared Google Sheet) into the Email Reporting DB
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+        run: python scripts/anevo_report.py   # data only; thumbnails already rendered, kept on update
+      - name: Rebuild the Email Reporting dashboard page (week → email → variation)
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+        run: python scripts/reporting_page.py
