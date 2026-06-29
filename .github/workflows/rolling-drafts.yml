@@ -10,9 +10,12 @@ name: Email Machine — Rolling Daily
 # filter "Send Date is on or after today" (no job needed for the disappearing).
 
 on:
-  schedule:
-    - cron: "13 12 * * *"   # daily ~12:13 UTC; off-:00 on purpose
-  workflow_dispatch: {}
+  # PAUSED 2026-06-29 (Niko): the daily AI auto-drafting of the calendar is OFF. We
+  # now fill the calendar manually/conversationally so subject lines are chosen
+  # deliberately together, not auto-generated. To resume, uncomment the schedule.
+  # schedule:
+  #   - cron: "13 12 * * *"   # daily ~12:13 UTC; off-:00 on purpose
+  workflow_dispatch: {}   # manual trigger only while paused
 
 permissions:
   contents: read
