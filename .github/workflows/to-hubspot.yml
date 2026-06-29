@@ -40,6 +40,11 @@ jobs:
         run: |
           pip install --quiet pillow || pip3 install --quiet pillow || true
           google-chrome --version || true
+      - name: Fan + ready subject-line A/B tests (send the whole test, not just Variant A)
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CHROME_BIN: google-chrome
+        run: python scripts/variants.py --prepare
       - name: Create HubSpot draft
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}

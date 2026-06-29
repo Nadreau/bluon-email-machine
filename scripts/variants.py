@@ -139,7 +139,8 @@ def spawn(base_id):
             "Variant": {"select": {"name": letter}},
             "Test Group": {"rich_text": [{"type": "text", "text": {"content": group}}]},
             "Test Stem": {"rich_text": [{"type": "text", "text": {"content": stem[:200]}}]},
-            "Ready to Go": {"checkbox": False},
+            # inherit the base's approval: if the base is Ready, the whole test is approved → siblings send too
+            "Ready to Go": {"checkbox": bool((pr.get("Ready to Go") or {}).get("checkbox"))},
         })
         if send_date:
             props["Send Date"] = {"date": {"start": send_date}}
@@ -165,5 +166,36 @@ def spawn(base_id):
     return ids
 
 
+def prepare():
+    """Pre-send sweep so marking a subject test's base 'Ready to Go' sends the WHOLE A/B test,
+    not just Variant A: (1) fan any un-fanned, Ready subject test; (2) once a group's Variant A
+    is Ready, mark every sibling Ready too. Acts ONLY on approved (Ready) tests; idempotent."""
+    def q():
+        return notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]
+    rdy = lambda p: bool((p.get("Ready to Go") or {}).get("checkbox"))
+    snm = lambda p, k: ((p.get(k, {}) or {}).get("select") or {}).get("name", "")
+    grp = lambda p: "".join(x.get("plain_text", "") for x in (p.get("Test Group", {}).get("rich_text") or []))
+    # 1) fan un-fanned, Ready subject tests
+    for r in q():
+        p = r["properties"]
+        if snm(p, "Testing") == "Subject Line" and not snm(p, "Variant") and rdy(p) and len(_variants(p)) >= 2:
+            print("  prepare: fanning ready test", r["id"]); spawn(r["id"])
+    # 2) ready-sync: if a group's Variant A is Ready, ready every sibling too
+    groups = {}
+    for r in q():
+        p = r["properties"]
+        if snm(p, "Testing") == "Subject Line" and grp(p):
+            groups.setdefault(grp(p), []).append((r["id"], p))
+    for tg, members in groups.items():
+        if any(rdy(p) for _, p in members if snm(p, "Variant") == "A"):
+            for pid, p in members:
+                if not rdy(p):
+                    notion._call("PATCH", f"/pages/{pid}", {"properties": {"Ready to Go": {"checkbox": True}}})
+                    print(f"  prepare: readied sibling in '{tg}'")
+
+
 if __name__ == "__main__":
-    spawn(sys.argv[1].strip())
+    if len(sys.argv) > 1 and sys.argv[1] == "--prepare":
+        prepare()
+    else:
+        spawn(sys.argv[1].strip())
