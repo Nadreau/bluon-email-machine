@@ -82,6 +82,8 @@ def load_rows():
                 "ctr": _num(pr, "CTR"),
                 "recipients": _num(pr, "Recipients"),
                 "clicks": _num(pr, "Clicks"),
+                "replies": _num(pr, "Replies"),
+                "leads": _num(pr, "Leads (Interested)"),
                 "winner": bool(pr.get("Winner", {}).get("checkbox")),
                 "link": pr.get("HubSpot Link", {}).get("url"),
                 "img": _img_url(pr),
@@ -129,7 +131,7 @@ def _reupload(url):
         return None
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        data = urllib.request.urlopen(req, timeout=60).read()
+        data = urllib.request.urlopen(req, timeout=15).read()
         p = tempfile.mktemp(suffix=".png")
         open(p, "wb").write(data)
         return mockup.upload_png(p, "variant.png")
@@ -138,22 +140,11 @@ def _reupload(url):
         return None
 
 
-def _badge(source):
-    return "✉️ HubSpot · Engaged" if source == "HubSpot" else "📬 Anevo · Unengaged"
-
-
-def _email_callout(test, variants):
-    """Plain, non-competitive read: both versions sent, here's which is doing better.
-    No trophy / 'winner' / settle-countdown language — just the comparison."""
-    src = variants[0]["source"]
-    if src == "Anevo":
-        fmt = lambda v: f"{v['variant']} {pctf(v['open'])} open"
-        keyf = lambda v: (v["open"] or 0)
-        note = "   (Anevo reports click-to-open, not CTR — shown separately)"
-    else:
-        fmt = lambda v: f"{v['variant']} {pctf(v['ctr'])} CTR"
-        keyf = lambda v: (v["ctr"] or 0, v["open"] or 0)
-        note = None
+def _email_callout(variants):
+    """HubSpot A/B read — both versions sent, which is doing better (no winner/contest
+    framing). HubSpot only; Anevo cold-email is rendered as its own table."""
+    fmt = lambda v: f"{v['variant']} {pctf(v['ctr'])} CTR"
+    keyf = lambda v: (v["ctr"] or 0, v["open"] or 0)
     ranked = sorted(variants, key=keyf, reverse=True)
     lead = "Both versions sent.  " if len(variants) == 2 else "All versions sent.  "
     parts = [rt(lead, bold=True)]
@@ -163,10 +154,31 @@ def _email_callout(test, variants):
     else:
         parts += [rt("performing about the same — "),
                   rt(" · ".join(fmt(v) for v in variants))]
-    if note:
-        parts.append(rt(note, color="gray"))
     return {"object": "block", "type": "callout",
             "callout": {"icon": {"emoji": "📊"}, "color": GRAY, "rich_text": parts}}
+
+
+def _cell(text, **ann):
+    return [rt(str(text), **ann)]
+
+
+def _anevo_table(rows):
+    """Cold-email campaigns as a compact table — Campaign | Sent | Open | Replies |
+    Interested. Replies + interested leads are the real cold-email KPIs (opens are noisy)."""
+    rows = sorted(rows, key=lambda r: r["wk_key"], reverse=True)
+    trs = [{"type": "table_row", "table_row": {"cells": [
+        _cell("Campaign", bold=True), _cell("Sent", bold=True), _cell("Open", bold=True),
+        _cell("Replies", bold=True), _cell("Interested", bold=True)]}}]
+    for r in rows:
+        trs.append({"type": "table_row", "table_row": {"cells": [
+            _cell((r["subject"] or "—")[:60]),
+            _cell(comma(r["recipients"])),
+            _cell(pctf(r["open"])),
+            _cell(int(r["replies"] or 0)),
+            _cell(int(r["leads"] or 0)),
+        ]}})
+    return {"object": "block", "type": "table",
+            "table": {"table_width": 5, "has_column_header": True, "has_row_header": False, "children": trs}}
 
 
 def _variant_caption(v):
@@ -198,28 +210,29 @@ def build():
     if not rows:
         print("no rows in source DB; nothing to render")
         return
-    weeks = group(rows)
+    hubspot = [r for r in rows if r["source"] == "HubSpot"]
+    anevo = [r for r in rows if r["source"] == "Anevo"]
+
+    weeks = group(hubspot)
     order = sorted(weeks.items(), key=lambda kv: kv[1]["wk_key"], reverse=True)
     if len(order) > MAX_WEEKS:
-        print(f"NOTE: showing newest {MAX_WEEKS} of {len(order)} weeks (older weeks live in the source DB).")
+        print(f"NOTE: showing newest {MAX_WEEKS} of {len(order)} HubSpot weeks (older weeks live in the source DB).")
         order = order[:MAX_WEEKS]
 
-    # short, honest header — counts only (no aggregate "people reached"; A/B sample
-    # structure + Anevo per-variant lists make a unique-people total unreliable)
-    n_emails = sum(len(wk["emails"]) for _, wk in order)
+    n_tests = sum(len(wk["emails"]) for _, wk in order)
     ts = datetime.datetime.now().strftime("%b %-d")
 
     clear_page(REPORT_PAGE)
 
-    top = [
+    notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
         {"object": "block", "type": "callout",
          "callout": {"icon": {"emoji": "📬"}, "color": "blue_background", "rich_text": [
-             rt("Every email we've sent, newest first — both A/B versions side by side."),
-             rt(f"\n{n_emails} emails · {len(rows)} versions · {len(order)} weeks · updated {ts}", color="gray"),
+             rt("Bluon email reporting — HubSpot marketing emails (A/B tested) up top, Anevo cold-email campaigns below."),
+             rt(f"\n{n_tests} HubSpot tests · {len(anevo)} Anevo campaigns · updated {ts}", color="gray"),
          ]}},
-    ]
-    notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": top})
+    ]})
 
+    # ---- HubSpot: week → email → A/B variation, with mockups ----
     for week, wk in order:
         emails = wk["emails"]
         notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
@@ -230,14 +243,32 @@ def build():
             ]}},
         ]})
         for test, variants in sorted(emails.items()):
-            src = variants[0]["source"]
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
                 {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
-                    rt(test), rt(f"      {_badge(src)}", color="gray")]}},
-                _email_callout(test, variants),
+                    rt(test), rt("      ✉️ HubSpot", color="gray")]}},
+                _email_callout(variants),
             ]})
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": _variants_block(variants)})
-            print(f"  {week} · {test}: {len(variants)} variants")
+            print(f"  HubSpot · {week} · {test}: {len(variants)} variants")
+
+    # ---- Anevo: cold-email campaigns as one compact table ----
+    if anevo:
+        tot_sent = sum(r["recipients"] or 0 for r in anevo)
+        tot_reply = sum(r["replies"] or 0 for r in anevo)
+        tot_leads = sum(r["leads"] or 0 for r in anevo)
+        notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
+            {"object": "block", "type": "divider", "divider": {}},
+            {"object": "block", "type": "heading_1", "heading_1": {"rich_text": [
+                rt("📬 Anevo — Cold Email"),
+                rt(f"      {len(anevo)} campaigns", color="gray")]}},
+            {"object": "block", "type": "callout",
+             "callout": {"icon": {"emoji": "📈"}, "color": GRAY, "rich_text": [
+                 rt("Cold outreach via Anevo (Smartlead), live from the API. "),
+                 rt("For cold email the numbers that matter are replies + interested leads — opens are noisy."),
+                 rt(f"\nTotals: {comma(tot_sent)} sent · {tot_reply} replies · {tot_leads} interested leads", bold=True)]}},
+        ]})
+        notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [_anevo_table(anevo)]})
+        print(f"  Anevo: {len(anevo)} campaigns in table")
     print("dashboard rebuilt:", REPORT_PAGE)
 
 

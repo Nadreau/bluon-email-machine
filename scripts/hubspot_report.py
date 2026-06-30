@@ -145,6 +145,30 @@ def sync():
     print(f"HubSpot rows: {n_new} added, {n_upd} refreshed")
 
 
+def normalize_tests():
+    """A/B variants of one test must share a Test value so the dashboard pairs them.
+    The calendar's Test Stem is inconsistent across A/B rows (one gets "LTS Relaunch",
+    the other falls back to "Email"), which splits a test into singletons. Unify per
+    (audience, send-month): pick the best real (non-"Email") stem and apply it to every
+    HubSpot variant in that group."""
+    groups = {}
+    for r in _all(REPORTING_DB):
+        pr = r["properties"]
+        if _sel(pr, "Source") != "HubSpot":
+            continue
+        aud = _sel(pr, "Audience") or ""
+        month = ((pr.get("Sent", {}).get("date") or {}).get("start") or "")[:7]
+        groups.setdefault((aud, month), []).append((r["id"], _sel(pr, "Test") or ""))
+    for (aud, _month), members in groups.items():
+        stems = [t.split(" · ")[0] for _, t in members if t and not t.startswith("Email")]
+        stem = stems[0] if stems else "Email"
+        target = f"{stem} · {aud}".strip(" ·")
+        for pid, test in members:
+            if test != target:
+                notion._call("PATCH", f"/pages/{pid}", {"properties": {"Test": {"select": {"name": target}}}})
+                print(f"  = unified Test → {target}")
+
+
 def crown():
     """Winner per Test = highest CTR (open-rate tiebreak) after a 7-day settle."""
     today = datetime.date.today()
@@ -183,4 +207,5 @@ def crown():
 
 if __name__ == "__main__":
     sync()
+    normalize_tests()
     crown()
