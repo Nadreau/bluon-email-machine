@@ -25,6 +25,18 @@ import notion, mockup
 # default, set in HubSpot. (Confirmed against a live send Jun 30 2026.)
 FNAME_TOKEN = '{{ contact.firstname }}'
 
+# Recipient lists (HubSpot ILS ids). Suppressions ("Don't send to") are CONSTANT across
+# sends; audience ("Send to") is last-week's per-segment mapping. These MUST be set while
+# the email is still PLAIN — once it's an A/B test, HubSpot stops exposing (and accepting)
+# to.contactIlsLists via the API, though the config persists in the actual send (confirmed:
+# live A/B emails keep their lists in the UI). So make_draft sets them before A/B conversion.
+SUPPRESSION_LISTS = ["24067", "24459", "24637"]  # Active Suppression Segment · The Suppression Nexus · Imanie's old prospecting
+AUDIENCE_LISTS = {   # last week's actual sends; update if segments change
+    "Residential": ["24711", "24714", "24708", "24712", "24710", "24707",
+                    "24706", "24703", "24700", "24704", "24702", "24699"],  # all but Commercial Contractors, eng+uneng
+    "Commercial":  ["24713", "24709", "24705", "24701"],                    # Commercial Contractors, eng+uneng
+}
+
 
 def personalize(escaped):
     """Turn a generic greeting / placeholder in the (already-escaped) copy into the
@@ -287,6 +299,16 @@ def make_draft(page_id):
              "content": {"widgets": widgets}}
     hs("PATCH", f"/marketing/v3/emails/{eid}", patch)
     print("  hero:", hero_kind)
+
+    # recipients + suppressions — set NOW, while the email is still PLAIN. Once process()
+    # converts it to an A/B test the API can no longer write these, but they persist in the
+    # send. Suppressions are always applied; audience comes from the per-segment mapping
+    # (unmapped segments → no send-to here, set in the UI).
+    aud = (pr.get("Audience", {}).get("select") or {}).get("name")
+    sendto = AUDIENCE_LISTS.get(aud, [])
+    hs("PATCH", f"/marketing/v3/emails/{eid}",
+       {"to": {"contactIlsLists": {"include": sendto, "exclude": SUPPRESSION_LISTS}}})
+    print(f"  recipients: {len(sendto)} send-to + {len(SUPPRESSION_LISTS)} suppression list(s) (set pre-A/B)")
 
     url = f"https://app.hubspot.com/email/{PORTAL}/edit/{eid}/content"
     notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Hubspot Email": {"url": url}}})
