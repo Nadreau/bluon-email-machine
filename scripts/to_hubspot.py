@@ -316,20 +316,56 @@ def snapshot(page_id, info, pr, landing_url=None):
         print("  landing page snapshot skipped (", lp, "):", e)
 
 
+def make_ab_variation(base_page, b_page):
+    """Subject A/B test: make the 2nd row a NATIVE HubSpot A/B variation of the base's
+    email (same body, different subject) — ONE A/B test, not two separate emails. HubSpot
+    A/B is 2 versions max; recipients stay a UI step (the API can't set them on an A/B
+    email). Falls back to a standalone draft if the variation can't be created."""
+    base_pr = notion._call("GET", f"/pages/{base_page}")["properties"]
+    m = re.search(r"/edit/(\d+)", (base_pr.get("Hubspot Email", {}) or {}).get("url") or "")
+    if not m:
+        print("  base email missing — standalone draft for B"); return make_draft(b_page)
+    b_pr = notion._call("GET", f"/pages/{b_page}")["properties"]
+    b_subject = "".join(x.get("plain_text", "") for x in (b_pr.get("Subject", {}).get("rich_text") or [])) \
+        or "".join(x.get("plain_text", "") for x in b_pr.get("Email", {}).get("title", []))
+    b_name = "".join(x.get("plain_text", "") for x in b_pr.get("Email", {}).get("title", []))
+    try:
+        var = hs("POST", "/marketing/v3/emails/ab-test/create-variation",
+                 {"contentId": m.group(1), "variationName": "B"})
+    except SystemExit as e:
+        print("  create-variation failed — standalone draft for B:", e); return make_draft(b_page)
+    vid = var.get("id")
+    if not vid:
+        print("  no variation id — standalone draft for B"); return make_draft(b_page)
+    hs("PATCH", f"/marketing/v3/emails/{vid}", {"subject": b_subject, "name": b_name})
+    url = f"https://app.hubspot.com/email/{PORTAL}/edit/{vid}/content"
+    notion._call("PATCH", f"/pages/{b_page}", {"properties": {"Hubspot Email": {"url": url}}})
+    print(f"  native A/B variation B (subject {b_subject!r}): {url}")
+    try:
+        snapshot(b_page, notion.parse_draft_page(b_page), b_pr)
+    except Exception as e:
+        print("  B snapshot skipped:", e)
+    return url
+
+
 def process(page_id):
-    """Approve-once-spawn: a subject-test base expands into its A/B/C variant rows
-    first, then each variant (and any plain row) gets its own HubSpot draft."""
+    """Approve-once: a subject-test base expands into its A/B variant row, then becomes ONE
+    native HubSpot A/B test (base = version A, the sibling = variation B) — not two separate
+    emails. A plain (non-test) row just gets its own draft."""
     import variants
-    ids = variants.spawn(page_id)                 # [base] or [base, B, C] for a subject test
-    for pid in ids:
-        pr = notion._call("GET", f"/pages/{pid}")["properties"]
-        if (pr.get("Hubspot Email", {}) or {}).get("url"):
-            continue                              # already drafted — re-fires are no-ops
-        make_draft(pid)
+    ids = variants.spawn(page_id)                 # [base] or [base, B] (capped at 2)
+    base = ids[0]
+    base_pr = notion._call("GET", f"/pages/{base}")["properties"]
+    if not (base_pr.get("Hubspot Email", {}) or {}).get("url"):
+        make_draft(base)                          # version A (or a standalone email)
+    for b in ids[1:]:                             # subject-test sibling → native A/B variation
+        b_pr = notion._call("GET", f"/pages/{b}")["properties"]
+        if (b_pr.get("Hubspot Email", {}) or {}).get("url"):
+            continue                              # already drafted — re-fires no-op
+        make_ab_variation(base, b)
     if len(ids) > 1:
-        # publish the whole fanned set together so the spawned variants don't need a
-        # second manual check; they're already drafted + linked, so the webhook
-        # re-fires this triggers just no-op (skip on "already drafted").
+        # publish the whole set together so the spawned variant doesn't need a second
+        # manual check; already drafted + linked, so the re-fired webhook just no-ops.
         for pid in ids:
             try:
                 notion.set_checkbox(pid, "Ready to Go", True)
