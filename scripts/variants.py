@@ -81,6 +81,12 @@ def spawn(base_id):
     info = notion.parse_draft_page(base_id)
     pr = notion._call("GET", f"/pages/{base_id}")["properties"]
     subjects = _variants(pr)
+    # HubSpot A/B tests support exactly TWO subject versions — never 3+. Cap here so the
+    # machine can't fan a 3-way that HubSpot can't run (the Wave-2 "duplicates" bug).
+    if len(subjects) > 2:
+        print(f"⚠️  {len(subjects)} subjects given, but a HubSpot A/B test is 2 versions max — "
+              f"using the first two, dropping: {subjects[2:]}")
+        subjects = subjects[:2]
     sel = lambda k: (pr.get(k, {}).get("select") or {}).get("name") or ""
     if len(subjects) < 2:
         if sel("Testing") == "Subject Line":   # MEANT to be a test — don't fail silently
