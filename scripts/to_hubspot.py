@@ -19,12 +19,16 @@ import notion, mockup
 # HubSpot personalization token for the recipient's first name, with a graceful
 # "there" fallback when HubSpot has no first name on file. Inserted AFTER html
 # escaping (the quotes/braces must stay raw for HubL to fire).
-FNAME_TOKEN = '{{ contact.firstname|default("there") }}'
+# HubSpot's canonical contact token. The `|default("there")` HubL form gets SILENTLY
+# STRIPPED by HubSpot's email editor (renders "Hey ," — no name, no fallback); the bare
+# token is what last week's working sends used. Fallback comes from the property's global
+# default, set in HubSpot. (Confirmed against a live send Jun 30 2026.)
+FNAME_TOKEN = '{{ contact.firstname }}'
 
 
 def personalize(escaped):
     """Turn a generic greeting / placeholder in the (already-escaped) copy into the
-    HubSpot first-name token. 'Hey there,' -> 'Hey {{ firstname|default(there) }},'.
+    HubSpot first-name token. 'Hey there,' -> 'Hey {{ contact.firstname }},'.
     Also honors an explicit {firstname} / {first_name} placeholder Pete can type."""
     escaped = re.sub(r"(?i)\b(hey|hi|hello)([,!]?\s+)there\b",
                      lambda m: m.group(1) + m.group(2) + FNAME_TOKEN, escaped)
