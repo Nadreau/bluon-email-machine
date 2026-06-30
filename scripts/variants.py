@@ -181,10 +181,14 @@ def prepare():
     rdy = lambda p: bool((p.get("Ready to Go") or {}).get("checkbox"))
     snm = lambda p, k: ((p.get(k, {}) or {}).get("select") or {}).get("name", "")
     grp = lambda p: "".join(x.get("plain_text", "") for x in (p.get("Test Group", {}).get("rich_text") or []))
-    # 1) fan un-fanned, Ready subject tests
+    # 1) fan un-fanned, Ready subject tests — but NOT one already pushed to HubSpot.
+    # A row that already has a Hubspot Email link is a built A/B test (it represents the
+    # whole test via its Subject Variants); re-fanning it would duplicate the HubSpot send.
+    linked = lambda p: bool((p.get("Hubspot Email", {}) or {}).get("url"))
     for r in q():
         p = r["properties"]
-        if snm(p, "Testing") == "Subject Line" and not snm(p, "Variant") and rdy(p) and len(_variants(p)) >= 2:
+        if snm(p, "Testing") == "Subject Line" and not snm(p, "Variant") and rdy(p) \
+           and len(_variants(p)) >= 2 and not linked(p):
             print("  prepare: fanning ready test", r["id"]); spawn(r["id"])
     # 2) ready-sync: if a group's Variant A is Ready, ready every sibling too
     groups = {}
