@@ -32,12 +32,16 @@ jobs:
           else
             python scripts/reporting.py
           fi
-      - name: Pull sent emails into the calendar (incl HubSpot native A/B variants) + channel-tag
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
-          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
-        run: python scripts/email_report.py
-      - name: Feed HubSpot sends into the Email Reporting DB (discover + refresh + crown)
+      # email_report.py is DISABLED: it mirrored HubSpot A/B pairs into the calendar as
+      # separate A/B rows, which re-splits our one-row-per-test calendar. hubspot_report.py
+      # now pulls the A/B variation straight from HubSpot into the Reporting DB instead, so
+      # the calendar stays one row per test. Re-enable only if we abandon the one-row model.
+      # - name: Pull sent emails into the calendar (incl HubSpot native A/B variants) + channel-tag
+      #   env:
+      #     NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+      #     HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+      #   run: python scripts/email_report.py
+      - name: Feed HubSpot sends into the Email Reporting DB (discover + refresh + crown + A/B variation)
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}

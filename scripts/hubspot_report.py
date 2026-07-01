@@ -18,8 +18,10 @@ Anevo rows are never touched here.
 
   python scripts/hubspot_report.py
 """
-import sys, re, datetime, tempfile, urllib.request, urllib.error
+import sys, re, json, datetime, tempfile, urllib.request, urllib.error
 import notion, mockup, reporting
+
+PORTAL = "6885872"
 
 REPORTING_DB = "38e576a5-c12d-81b7-a5a8-d2e1e2f5433a"
 EID = re.compile(r"/edit/(\d+)")
@@ -73,75 +75,112 @@ def _img_url(pr):
     return (f.get("file") or {}).get("url") or (f.get("external") or {}).get("url")
 
 
+def _campaign_map():
+    """primaryEmailCampaignId -> email id, so an A/B master can find its variation
+    (the variation's primaryEmailCampaignId = the master's + 2; they share a campaign)."""
+    out, after = {}, None
+    while True:
+        u = "https://api.hubapi.com/marketing/v3/emails?limit=100" + (f"&after={after}" if after else "")
+        req = urllib.request.Request(u, headers={"Authorization": f"Bearer {reporting.HS_TOKEN}"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            d = json.load(r)
+        for e in d.get("results", []):
+            p = e.get("primaryEmailCampaignId")
+            if p is not None:
+                out[int(p)] = e["id"]
+        after = ((d.get("paging", {}) or {}).get("next", {}) or {}).get("after")
+        if not after:
+            break
+    return out
+
+
+def _upsert_row(eid, subject, stats, *, test, variant, audience, sent, by_eid, by_tv, img_url=None):
+    """Create/refresh one Reporting-DB row for a HubSpot email + variant. Returns
+    'new' / 'upd' / None (nothing sent yet)."""
+    base = reporting.stats_to_props(stats)
+    if not base:
+        return None
+    props = {k: v for k, v in base.items() if k in RICH}
+    props.update({
+        "Source": {"select": {"name": "HubSpot"}},
+        "Test": {"select": {"name": test}},
+        "Variant": {"select": {"name": variant}},
+        "Subject": {"rich_text": [{"type": "text", "text": {"content": (subject or "")[:1900]}}]},
+        "HubSpot Link": {"url": f"https://app.hubspot.com/email/{PORTAL}/edit/{eid}/content"},
+    })
+    if audience:
+        props["Audience"] = {"select": {"name": audience}}
+    if sent:
+        props["Sent"] = {"date": {"start": sent[:10]}}
+    pid = by_eid.get(str(eid)) or by_tv.get((test, variant))
+    if pid:
+        notion._call("PATCH", f"/pages/{pid}", {"properties": props})
+        return "upd"
+    props["Name"] = {"title": [{"type": "text", "text": {"content": f"{test} — {variant}"}}]}
+    if img_url:
+        fid = _reupload(img_url)
+        if fid:
+            props["Email Image"] = {"files": [{"type": "file_upload", "name": "email.png", "file_upload": {"id": fid}}]}
+    page = notion._call("POST", "/pages", {"parent": {"database_id": REPORTING_DB}, "properties": props})
+    by_eid[str(eid)] = page["id"]
+    return "new"
+
+
 def sync():
-    # index existing Reporting rows: by email id, and by (Test, Variant) as a fallback
+    # index existing Reporting rows by email id + (Test, Variant)
     by_eid, by_tv = {}, {}
     for r in _all(REPORTING_DB):
         pr = r["properties"]
         if _sel(pr, "Source") != "HubSpot":
             continue
-        url = pr.get("HubSpot Link", {}).get("url") or ""
-        m = EID.search(url)
+        m = EID.search(pr.get("HubSpot Link", {}).get("url") or "")
         if m:
             by_eid[m.group(1)] = r["id"]
         t, v = _sel(pr, "Test"), _sel(pr, "Variant")
         if t and v:
             by_tv[(t, v)] = r["id"]
 
+    cmap = _campaign_map()
     n_new = n_upd = 0
     for r in _all(notion.CALENDAR_DB_ID):
         pr = r["properties"]
         if _sel(pr, "Status") != "Sent":
             continue
-        url = (pr.get("Hubspot Email", {}) or {}).get("url")
-        if not url:
-            continue
-        m = EID.search(url)
+        m = EID.search((pr.get("Hubspot Email", {}) or {}).get("url") or "")
         if not m:
             continue
         eid = m.group(1)
         test = _norm_test(pr)
-        variant = _sel(pr, "Variant") or "A"
-        subject = _txt(pr, "Subject") or "".join(x.get("plain_text", "") for x in pr.get("Email", {}).get("title", []))
         audience = _sel(pr, "Audience")
         sent = (pr.get("Send Date", {}).get("date") or {}).get("start")
-        link = url if "/content" in url else url.rstrip("/") + "/content"
-
-        # live stats from HubSpot (freshest source of truth)
+        subject = _txt(pr, "Subject") or "".join(x.get("plain_text", "") for x in pr.get("Email", {}).get("title", []))
+        cal_variant = _sel(pr, "Variant")
         try:
-            stats = reporting.hs_email(eid).get("stats", {}) or {}
+            email = reporting.hs_email(eid)
         except urllib.error.HTTPError as e:
             print("  HubSpot error", e.code, "for", subject[:40]); continue
-        props = reporting.stats_to_props(stats)
-        if not props:
-            print("  no sends yet:", subject[:40]); continue
-        props = {k: v for k, v in props.items() if k in RICH}  # drop calendar-only cols
-        props.update({
-            "Source": {"select": {"name": "HubSpot"}},
-            "Test": {"select": {"name": test}},
-            "Variant": {"select": {"name": variant}},
-            "Subject": {"rich_text": [{"type": "text", "text": {"content": subject[:1900]}}]},
-            "HubSpot Link": {"url": link},
-        })
-        if audience:
-            props["Audience"] = {"select": {"name": audience}}
-        if sent:
-            props["Sent"] = {"date": {"start": sent[:10]}}
 
-        pid = by_eid.get(eid) or by_tv.get((test, variant))
-        if pid:
-            notion._call("PATCH", f"/pages/{pid}", {"properties": props})
-            n_upd += 1
-            print(f"  ~ {test} {variant}  open {props['Open Rate']['number']*100:.1f}% ctr {props['CTR']['number']*100:.2f}%")
-        else:
-            props["Name"] = {"title": [{"type": "text", "text": {"content": f"{test} — {variant}"}}]}
-            fid = _reupload(_img_url(pr))
-            if fid:
-                props["Email Image"] = {"files": [{"type": "file_upload", "name": "email.png", "file_upload": {"id": fid}}]}
-            page = notion._call("POST", "/pages", {"parent": {"database_id": REPORTING_DB}, "properties": props})
-            by_eid[eid] = page["id"]
-            n_new += 1
-            print(f"  + {test} {variant}  (new)")
+        # A = the linked email (an already-split calendar row keeps its own A/B letter)
+        st = _upsert_row(eid, subject, email.get("stats", {}) or {}, test=test, variant=cal_variant or "A",
+                         audience=audience, sent=sent, by_eid=by_eid, by_tv=by_tv, img_url=_img_url(pr))
+        if st == "new": n_new += 1
+        elif st == "upd": n_upd += 1
+        elif st is None: print("  no sends yet:", subject[:40])
+
+        # B = the native A/B variation, pulled straight from HubSpot (keeps the calendar
+        # at one row per test). Only for a consolidated row (no explicit variant of its own).
+        if email.get("isAb") and email.get("primaryEmailCampaignId") is not None and not cal_variant:
+            var = cmap.get(int(email["primaryEmailCampaignId"]) + 2)
+            if var and str(var) != eid:
+                try:
+                    ve = reporting.hs_email(str(var))
+                    st2 = _upsert_row(str(var), ve.get("subject", ""), ve.get("stats", {}) or {},
+                                      test=test, variant="B", audience=audience, sent=sent,
+                                      by_eid=by_eid, by_tv=by_tv, img_url=_img_url(pr))  # same body → same mockup
+                    if st2 == "new": n_new += 1; print(f"  + {test} B (A/B variation {var})")
+                    elif st2 == "upd": n_upd += 1
+                except urllib.error.HTTPError:
+                    pass
     print(f"HubSpot rows: {n_new} added, {n_upd} refreshed")
 
 

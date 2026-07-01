@@ -17,7 +17,7 @@ import notion, mockup
 
 REPORT_PAGE = "38e576a5-c12d-8187-9c21-f82642db1fa1"      # the rendered dashboard page
 SOURCE_DB   = "38e576a5-c12d-81b7-a5a8-d2e1e2f5433a"      # Email Reporting — Automated (raw rows)
-MAX_WEEKS   = 10                                          # cap visible weeks (newest first); logs if it truncates
+MAX_WEEKS   = 26                                          # cap visible weeks (newest first); logs if it truncates
 
 GRAY = "gray_background"
 
@@ -210,65 +210,61 @@ def build():
     if not rows:
         print("no rows in source DB; nothing to render")
         return
-    hubspot = [r for r in rows if r["source"] == "HubSpot"]
-    anevo = [r for r in rows if r["source"] == "Anevo"]
-
-    weeks = group(hubspot)
+    # group EVERYTHING by week; within a week, HubSpot A/B tests (by test) + Anevo list
+    weeks = {}
+    for r in rows:
+        w = weeks.setdefault(r["week"], {"wk_key": r["wk_key"], "hs": {}, "an": []})
+        w["wk_key"] = max(w["wk_key"], r["wk_key"])
+        if r["source"] == "Anevo":
+            w["an"].append(r)
+        else:
+            w["hs"].setdefault(r["test"], []).append(r)
+    for w in weeks.values():
+        for vs in w["hs"].values():
+            vs.sort(key=lambda r: r["variant"] or "Z")
     order = sorted(weeks.items(), key=lambda kv: kv[1]["wk_key"], reverse=True)
     if len(order) > MAX_WEEKS:
-        print(f"NOTE: showing newest {MAX_WEEKS} of {len(order)} HubSpot weeks (older weeks live in the source DB).")
+        print(f"NOTE: showing newest {MAX_WEEKS} of {len(order)} weeks (older live in the source DB).")
         order = order[:MAX_WEEKS]
 
-    n_tests = sum(len(wk["emails"]) for _, wk in order)
+    n_hs = sum(len(wk["hs"]) for _, wk in order)
+    n_an = sum(len(wk["an"]) for _, wk in order)
     ts = datetime.datetime.now().strftime("%b %-d")
 
     clear_page(REPORT_PAGE)
-
     notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
         {"object": "block", "type": "callout",
          "callout": {"icon": {"emoji": "📬"}, "color": "blue_background", "rich_text": [
-             rt("Bluon email reporting — HubSpot marketing emails (A/B tested) up top, Anevo cold-email campaigns below."),
-             rt(f"\n{n_tests} HubSpot tests · {len(anevo)} Anevo campaigns · updated {ts}", color="gray"),
+             rt("Every send, newest week first — HubSpot A/B tests and Anevo cold-email campaigns, together by week."),
+             rt(f"\n{n_hs} HubSpot tests · {n_an} Anevo campaigns · {len(order)} weeks · updated {ts}", color="gray"),
          ]}},
     ]})
 
-    # ---- HubSpot: week → email → A/B variation, with mockups ----
     for week, wk in order:
-        emails = wk["emails"]
+        hs, an = wk["hs"], wk["an"]
+        bits = ([f"{len(hs)} HubSpot"] if hs else []) + ([f"{len(an)} Anevo"] if an else [])
         notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
             {"object": "block", "type": "divider", "divider": {}},
             {"object": "block", "type": "heading_1", "heading_1": {"rich_text": [
-                rt(f"Week of {week}"),
-                rt(f"      {len(emails)} email{'s' if len(emails) != 1 else ''}", color="gray"),
-            ]}},
+                rt(f"Week of {week}"), rt("      " + " · ".join(bits), color="gray")]}},
         ]})
-        for test, variants in sorted(emails.items()):
+        # HubSpot A/B galleries for this week
+        for test, variants in sorted(hs.items()):
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
                 {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
                     rt(test), rt("      ✉️ HubSpot", color="gray")]}},
                 _email_callout(variants),
             ]})
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": _variants_block(variants)})
-            print(f"  HubSpot · {week} · {test}: {len(variants)} variants")
-
-    # ---- Anevo: cold-email campaigns as one compact table ----
-    if anevo:
-        tot_sent = sum(r["recipients"] or 0 for r in anevo)
-        tot_reply = sum(r["replies"] or 0 for r in anevo)
-        tot_leads = sum(r["leads"] or 0 for r in anevo)
-        notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
-            {"object": "block", "type": "divider", "divider": {}},
-            {"object": "block", "type": "heading_1", "heading_1": {"rich_text": [
-                rt("📬 Anevo — Cold Email"),
-                rt(f"      {len(anevo)} campaigns", color="gray")]}},
-            {"object": "block", "type": "callout",
-             "callout": {"icon": {"emoji": "📈"}, "color": GRAY, "rich_text": [
-                 rt("Cold outreach via Anevo (Smartlead), live from the API. "),
-                 rt("For cold email the numbers that matter are replies + interested leads — opens are noisy."),
-                 rt(f"\nTotals: {comma(tot_sent)} sent · {tot_reply} replies · {tot_leads} interested leads", bold=True)]}},
-        ]})
-        notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [_anevo_table(anevo)]})
-        print(f"  Anevo: {len(anevo)} campaigns in table")
+        # Anevo campaigns for this week (compact table)
+        if an:
+            notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
+                {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+                    rt("📬 Anevo — Cold Email"),
+                    rt(f"      {len(an)} campaign{'s' if len(an) != 1 else ''}", color="gray")]}},
+            ]})
+            notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [_anevo_table(an)]})
+        print(f"  Week of {week}: {len(hs)} HubSpot, {len(an)} Anevo")
     print("dashboard rebuilt:", REPORT_PAGE)
 
 
