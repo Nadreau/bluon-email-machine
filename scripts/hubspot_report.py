@@ -127,8 +127,15 @@ def _upsert_row(eid, subject, stats, *, test, variant, audience, sent, by_eid, b
 
 
 def sync():
-    # index existing Reporting rows by email id + (Test, Variant)
-    by_eid, by_tv = {}, {}
+    """Mirror every Sent calendar row into the Reporting DB with TRUE per-version
+    stats (A/B masters are split via reporting.ab_breakdown — never the blended
+    counters, which mix in the winner-remainder blast and can flatter the wrong
+    letter), record HubSpot's own A/B winners, and keep orphaned reporting rows
+    refreshing. Returns {test: 'A'|'B'} of HubSpot-decided winners for crown()."""
+    # index existing Reporting rows by email id + (Test, Variant). A colliding
+    # (Test, Variant) key is DROPPED, not last-write-wins — a wrong fallback match
+    # once bled one test's stats onto another test's row.
+    by_eid, by_tv, tv_dupes = {}, {}, set()
     for r in _all(REPORTING_DB):
         pr = r["properties"]
         if _sel(pr, "Source") != "HubSpot":
@@ -138,11 +145,25 @@ def sync():
             by_eid[m.group(1)] = r["id"]
         t, v = _sel(pr, "Test"), _sel(pr, "Variant")
         if t and v:
-            by_tv[(t, v)] = r["id"]
+            if (t, v) in by_tv:
+                tv_dupes.add((t, v))
+            else:
+                by_tv[(t, v)] = r["id"]
+    for k in tv_dupes:
+        by_tv.pop(k, None)
+
+    cal_rows = _all(notion.CALENDAR_DB_ID)
+    claimed = set()   # eids some calendar row links — a variation pull must not double-anchor
+    for r in cal_rows:
+        m = EID.search((r["properties"].get("Hubspot Email", {}) or {}).get("url") or "")
+        if m:
+            claimed.add(m.group(1))
 
     cmap = _campaign_map()
+    hs_decided = {}   # test -> 'A'|'B' (HubSpot's own A/B outcome)
+    visited = set()
     n_new = n_upd = 0
-    for r in _all(notion.CALENDAR_DB_ID):
+    for r in cal_rows:
         pr = r["properties"]
         if _sel(pr, "Status") != "Sent":
             continue
@@ -150,57 +171,97 @@ def sync():
         if not m:
             continue
         eid = m.group(1)
+        visited.add(eid)
         test = _norm_test(pr)
         audience = _sel(pr, "Audience")
         sent = (pr.get("Send Date", {}).get("date") or {}).get("start")
         subject = _txt(pr, "Subject") or "".join(x.get("plain_text", "") for x in pr.get("Email", {}).get("title", []))
+        # body tests share one subject — the Hook property is what differs, so
+        # that's what the dashboard should caption each variant column with
+        if _sel(pr, "Testing") == "Header / Hook" and _txt(pr, "Hook"):
+            subject = _txt(pr, "Hook")
         cal_variant = _sel(pr, "Variant")
         try:
             email = reporting.hs_email(eid)
         except urllib.error.HTTPError as e:
             print("  HubSpot error", e.code, "for", subject[:40]); continue
 
+        stats = email.get("stats", {}) or {}
+        bd = reporting.ab_breakdown(email)
+        if bd:
+            stats = bd["a"]           # true version-A sample, not the blended master
+            if bd["winner"]:
+                hs_decided[test] = bd["winner"]
+
         # A = the linked email (an already-split calendar row keeps its own A/B letter)
-        st = _upsert_row(eid, subject, email.get("stats", {}) or {}, test=test, variant=cal_variant or "A",
+        st = _upsert_row(eid, subject, stats, test=test, variant=cal_variant or "A",
                          audience=audience, sent=sent, by_eid=by_eid, by_tv=by_tv, img_url=_img_url(pr))
         if st == "new": n_new += 1
         elif st == "upd": n_upd += 1
         elif st is None: print("  no sends yet:", subject[:40])
 
-        # B = the native A/B variation, pulled straight from HubSpot (keeps the calendar
-        # at one row per test). Only for a consolidated row (no explicit variant of its own).
-        if email.get("isAb") and email.get("primaryEmailCampaignId") is not None and not cal_variant:
+        # B = the native A/B variation, pulled straight from HubSpot. Runs for a
+        # consolidated row (no variant of its own) and ALSO as a safety net for a
+        # fanned Variant-A row whose B sibling never got its own link — otherwise
+        # that B email silently never reaches the Reporting DB.
+        if email.get("isAb") and email.get("primaryEmailCampaignId") is not None and cal_variant in (None, "A"):
             var = cmap.get(int(email["primaryEmailCampaignId"]) + 2)
-            if var and str(var) != eid:
+            if var and str(var) != eid and (not cal_variant or str(var) not in claimed):
                 try:
                     ve = reporting.hs_email(str(var))
+                    visited.add(str(var))
                     st2 = _upsert_row(str(var), ve.get("subject", ""), ve.get("stats", {}) or {},
                                       test=test, variant="B", audience=audience, sent=sent,
-                                      by_eid=by_eid, by_tv=by_tv, img_url=_img_url(pr))  # same body → same mockup
+                                      by_eid=by_eid, by_tv=by_tv, img_url=_img_url(pr))
                     if st2 == "new": n_new += 1; print(f"  + {test} B (A/B variation {var})")
                     elif st2 == "upd": n_upd += 1
                 except urllib.error.HTTPError:
                     pass
-    print(f"HubSpot rows: {n_new} added, {n_upd} refreshed")
+
+    # orphaned reporting rows (calendar anchor archived/relinked) — keep their
+    # stats live straight from HubSpot instead of freezing them mid-test
+    n_orph = 0
+    for eid, pid in by_eid.items():
+        if eid in visited:
+            continue
+        try:
+            email = reporting.hs_email(eid)
+        except urllib.error.HTTPError:
+            continue
+        stats = email.get("stats", {}) or {}
+        bd = reporting.ab_breakdown(email)
+        if bd:
+            stats = bd["a"]
+        base = reporting.stats_to_props(stats)
+        if not base:
+            continue
+        notion._call("PATCH", f"/pages/{pid}",
+                     {"properties": {k: v for k, v in base.items() if k in RICH}})
+        n_orph += 1
+    print(f"HubSpot rows: {n_new} added, {n_upd} refreshed, {n_orph} orphans kept live")
+    return hs_decided
 
 
 def normalize_tests():
     """A/B variants of one test must share a Test value so the dashboard pairs them.
     The calendar's Test Stem is inconsistent across A/B rows (one gets "LTS Relaunch",
     the other falls back to "Email"), which splits a test into singletons. Unify per
-    (audience, send-month): pick the best real (non-"Email") stem and apply it to every
-    HubSpot variant in that group."""
+    (audience, send DATE) — a month-wide key merged DIFFERENT tests whenever two sends
+    to the same audience landed in one calendar month (e.g. Wave 2 Jul 1 + the next
+    test Jul 8), collapsing them into one bogus 4-variant group. A/B siblings always
+    share the exact send date, so the date key pairs them and nothing else. The stem
+    pick is majority-vote (deterministic), not first-row-wins."""
     groups = {}
     for r in _all(REPORTING_DB):
         pr = r["properties"]
         if _sel(pr, "Source") != "HubSpot":
             continue
         aud = _sel(pr, "Audience") or ""
-        month = ((pr.get("Sent", {}).get("date") or {}).get("start") or "")[:7]
-        groups.setdefault((aud, month), []).append((r["id"], _sel(pr, "Test") or ""))
-    for (aud, _month), members in groups.items():
+        day = ((pr.get("Sent", {}).get("date") or {}).get("start") or "")[:10]
+        groups.setdefault((aud, day), []).append((r["id"], _sel(pr, "Test") or ""))
+    for (aud, _day), members in groups.items():
         stems = [t.split(" · ")[0] for _, t in members if t and not t.startswith("Email")]
-        stem = stems[0] if stems else "Email"
+        stem = max(set(stems), key=lambda s: (stems.count(s), s)) if stems else "Email"
         target = f"{stem} · {aud}".strip(" ·")
         for pid, test in members:
             if test != target:
@@ -208,8 +269,11 @@ def normalize_tests():
                 print(f"  = unified Test → {target}")
 
 
-def crown():
-    """Winner per Test = highest CTR (open-rate tiebreak) after a 7-day settle."""
+def crown(hs_decided=None):
+    """Winner per Test: HubSpot's own A/B decision when it exists (it already drove
+    the remainder blast — no reason to wait or re-derive), else highest CTR
+    (open-rate tiebreak) after a 7-day settle."""
+    hs_decided = hs_decided or {}
     today = datetime.date.today()
     groups = {}
     for r in _all(REPORTING_DB):
@@ -220,6 +284,15 @@ def crown():
         if t:
             groups.setdefault(t, []).append((r["id"], pr))
     for test, rows in groups.items():
+        pick = hs_decided.get(test)
+        if pick:
+            lettered = {_sel(p, "Variant"): pid for pid, p in rows}
+            winner = lettered.get(pick)
+            if winner:
+                for pid, _ in rows:
+                    notion._call("PATCH", f"/pages/{pid}", {"properties": {"Winner": {"checkbox": pid == winner}}})
+                print(f"  🏆 '{test}': {pick} (HubSpot's A/B decision)")
+                continue
         scored = [(pid, p) for pid, p in rows if (p.get("Open Rate", {}) or {}).get("number") is not None]
         winner = None
         days = None
@@ -245,6 +318,6 @@ def crown():
 
 
 if __name__ == "__main__":
-    sync()
+    decided = sync()
     normalize_tests()
-    crown()
+    crown(decided)

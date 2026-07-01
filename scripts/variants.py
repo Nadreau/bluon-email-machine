@@ -1,13 +1,18 @@
-"""Subject-line A/B: expand ONE approved row into a row per subject variant.
+"""A/B fan-out: expand ONE approved row into a row per variant.
 
-A subject test = same email, different subjects. The reviewer writes one email,
-sets Testing = "Subject Line", and lists the subjects in the "Subject Variants"
-property (one per line). spawn() turns that single row into N sibling rows — same
-body / CTA / hero, each a different subject — tied by a shared Test Group and
-labelled Variant A/B/C, so each gets its own HubSpot draft + reporting line.
+Two test types, one mechanic:
+  Subject test — Testing = "Subject Line", subjects listed in "Subject Variants"
+    (one per line). Same body, different subjects.
+  Body test — Testing = "Header / Hook", the two hook PARAGRAPHS listed in
+    "Body Variants" (one per line, 'A: … / B: …' labels ok). Same subject, the
+    base page's hook-A paragraph is swapped for hook B on the sibling.
 
-Idempotent: the base becomes Variant A; siblings are only created once (re-running
-skips subjects that already have a row in the group).
+spawn()/spawn_body() turn the single row into sibling rows tied by a shared Test
+Group and labelled Variant A/B, so each gets its own HubSpot draft + reporting line.
+
+Idempotent: the base becomes Variant A; siblings are only created once. Re-running
+returns EVERY variant row id (including pre-existing siblings) — to_hubspot.process
+relies on that to pair the native HubSpot A/B, so never skip-without-returning.
 
   python scripts/variants.py <base_page_id>
 """
@@ -52,11 +57,12 @@ def canonical_group(stem, audience):
     return " · ".join(x for x in ((stem or "").strip(), (audience or "").strip()) if x) or "Test"
 
 
-def _variants(pr):
-    """Alternate subjects for a subject test — accepts one-per-line OR pipe-delimited
-    ('A: … | B: …'), stripping any leading 'A:' / 'B.' / 'C)' variant label. (The
-    pipe form used to silently parse as a single subject and the test never fanned.)"""
-    rt = (pr.get("Subject Variants", {}) or {}).get("rich_text", [])
+def _variants(pr, prop="Subject Variants"):
+    """Alternate subjects (or body hooks) for a test — accepts one-per-line OR
+    pipe-delimited ('A: … | B: …'), stripping any leading 'A:' / 'B.' / 'C)' variant
+    label. (The pipe form used to silently parse as a single subject and the test
+    never fanned.)"""
+    rt = (pr.get(prop, {}) or {}).get("rich_text", [])
     text = "".join(x.get("plain_text", "") for x in rt)
     out = []
     for s in re.split(r"\s*\|\s*|\n", text):
@@ -111,12 +117,16 @@ def spawn(base_id):
     diffs = [_differentiator(s, _common_prefix(subjects)) for s in subjects]
     send_date = (pr.get("Send Date", {}).get("date") or {}).get("start")
 
-    # which subjects already have a row in this group? (idempotency)
-    existing = set()
+    # which subjects already have a row in this group? (idempotency). Map subject →
+    # row id so a re-run RETURNS the existing sibling instead of dropping it — the
+    # prepare-then-process double-spawn used to return [base] only, so process()
+    # never paired the native A/B and B shipped as a second standalone email.
+    existing = {}
     for r in notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]:
         p = r["properties"]
-        if "".join(x.get("plain_text", "") for x in (p.get("Test Group", {}).get("rich_text") or [])) == group:
-            existing.add("".join(x.get("plain_text", "") for x in (p.get("Subject", {}).get("rich_text") or [])))
+        if r["id"] != base_id and "".join(x.get("plain_text", "") for x in (p.get("Test Group", {}).get("rich_text") or [])) == group:
+            subj_txt = "".join(x.get("plain_text", "") for x in (p.get("Subject", {}).get("rich_text") or []))
+            existing[subj_txt] = r["id"]
 
     # base row -> Variant A (first subject)
     notion._call("PATCH", f"/pages/{base_id}", {"properties": {
@@ -135,6 +145,7 @@ def spawn(base_id):
     ids = [base_id]
     for i, subj in enumerate(subjects[1:], start=1):
         if subj in existing:
+            ids.append(existing[subj])   # already fanned — return it so the A/B still pairs
             continue
         letter = "ABCDEF"[i]
         props = _carry_props(pr)
@@ -172,10 +183,122 @@ def spawn(base_id):
     return ids
 
 
+def spawn_body(base_id):
+    """Body (Header/Hook) A/B: same subject, two different hook PARAGRAPHS listed in
+    "Body Variants". The base page must already contain hook A verbatim as one of its
+    body paragraphs; the sibling gets the same page with that paragraph swapped for
+    hook B. Returns every variant row id (base first), like spawn()."""
+    info = notion.parse_draft_page(base_id)
+    pr = notion._call("GET", f"/pages/{base_id}")["properties"]
+    sel = lambda k: (pr.get(k, {}).get("select") or {}).get("name") or ""
+    hooks = _variants(pr, "Body Variants")
+    if len(hooks) > 2:
+        print(f"⚠️  {len(hooks)} hooks given, but a HubSpot A/B test is 2 versions max — "
+              f"using the first two, dropping: {hooks[2:]}")
+        hooks = hooks[:2]
+    if len(hooks) < 2:
+        print("⚠️  BODY TEST but <2 hooks parsed from 'Body Variants' — NOT fanning out. "
+              "Put one full hook paragraph per line ('A: … / B: …'):", base_id)
+        return [base_id]
+    # the tested paragraph must exist verbatim in the base body, or we can't build B
+    if hooks[0] not in info["body_lines"]:
+        print("⚠️  BODY TEST but hook A isn't a paragraph on the base page — NOT fanning. "
+              "The 'Body Variants' A line must match the page's hook paragraph exactly:", base_id)
+        return [base_id]
+
+    audience = sel("Audience")
+    subject = "".join(x.get("plain_text", "") for x in (pr.get("Subject", {}).get("rich_text") or [])).strip()
+    stem = "".join(x.get("plain_text", "") for x in (pr.get("Test Stem", {}).get("rich_text") or [])).strip() \
+        or sel("Campaign") or "Email"
+    named = "".join(x.get("plain_text", "") for x in (pr.get("Test Group", {}).get("rich_text") or []))
+    group = named or canonical_group(stem, audience)
+    diffs = [_differentiator(h, _common_prefix(hooks)) for h in hooks]
+    send_date = (pr.get("Send Date", {}).get("date") or {}).get("start")
+
+    # idempotency: same subject on every variant, so key existing siblings by
+    # (Test Group, Variant letter) instead of subject
+    existing = {}
+    for r in notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]:
+        p = r["properties"]
+        g = "".join(x.get("plain_text", "") for x in (p.get("Test Group", {}).get("rich_text") or []))
+        v = ((p.get("Variant", {}) or {}).get("select") or {}).get("name")
+        if r["id"] != base_id and g == group and v:
+            existing[v] = r["id"]
+
+    # base row -> Variant A (hook 1); Hook property carries the tested line for reporting
+    notion._call("PATCH", f"/pages/{base_id}", {"properties": {
+        "Testing": {"select": {"name": "Header / Hook"}},
+        "Variant": {"select": {"name": "A"}},
+        "Test Group": {"rich_text": [{"type": "text", "text": {"content": group}}]},
+        "Test Stem": {"rich_text": [{"type": "text", "text": {"content": stem[:200]}}]},
+        "Hook": {"rich_text": [{"type": "text", "text": {"content": hooks[0][:500]}}]},
+        "Email": {"title": [{"type": "text", "text": {"content": _title(stem, audience, "A", diffs[0])}}]},
+    }})
+
+    ids = [base_id]
+    for i, hook in enumerate(hooks[1:], start=1):
+        letter = "ABCDEF"[i]
+        if letter in existing:
+            ids.append(existing[letter])
+            continue
+        swap = lambda lines: [hook if ln == hooks[0] else ln for ln in lines]
+        props = _carry_props(pr)
+        props.update({
+            "Email": {"title": [{"type": "text", "text": {"content": _title(stem, audience, letter, diffs[i])}}]},
+            "Subject": {"rich_text": [{"type": "text", "text": {"content": subject[:200]}}]},
+            "Testing": {"select": {"name": "Header / Hook"}},
+            "Variant": {"select": {"name": letter}},
+            "Test Group": {"rich_text": [{"type": "text", "text": {"content": group}}]},
+            "Test Stem": {"rich_text": [{"type": "text", "text": {"content": stem[:200]}}]},
+            "Hook": {"rich_text": [{"type": "text", "text": {"content": hook[:500]}}]},
+            "Ready to Go": {"checkbox": bool((pr.get("Ready to Go") or {}).get("checkbox"))},
+        })
+        if send_date:
+            props["Send Date"] = {"date": {"start": send_date}}
+        page = notion._call("POST", "/pages", {
+            "parent": {"database_id": notion.CALENDAR_DB_ID}, "properties": props,
+            "children": notion.styled_email_blocks(subject=subject, preview=info.get("preview") or "",
+                        body_lines=swap(info["body_lines"]), cta=info["cta"])})
+        nid = page["id"]
+        # render this variant's OWN mockup (swapped hook) — the dashboard shows it,
+        # so B must never wear A's screenshot
+        try:
+            b_info = dict(info)
+            b_info["content"] = [dict(it, text=hook) if it.get("kind") == "para" and it.get("text") == hooks[0]
+                                 else it for it in info["content"]]
+            top_hero, flow = notion.email_layout(b_info)
+            fid = mockup.make_mockup_upload(headline=subject, flow=flow, cta=info["cta"], top_hero=top_hero)
+            if fid:
+                notion._call("PATCH", f"/blocks/{nid}/children", {"children": [{"object": "block",
+                    "type": "image", "image": {"type": "file_upload", "file_upload": {"id": fid}}}]})
+            png = mockup.make_email_png(headline=subject, flow=flow, cta=info["cta"], top_hero=top_hero)
+            mockup.attach_file_to_property(nid, "Email Image", png, "email.png")
+        except Exception as e:
+            print("  mockup failed for", letter, e)
+        ids.append(nid)
+        print(f"  + Variant {letter} (hook): {hook[:60]}")
+    print(f"body test '{group}': {len(ids)} variants")
+    return ids
+
+
+def route(base_id):
+    """Fan a row by its declared test type. Anything the machine can't build fans
+    to nothing — loudly."""
+    pr = notion._call("GET", f"/pages/{base_id}")["properties"]
+    testing = ((pr.get("Testing", {}) or {}).get("select") or {}).get("name") or ""
+    if testing == "Header / Hook":
+        return spawn_body(base_id)
+    if testing in ("Landing Page", "Feature", "Offer", "Vibe"):
+        print(f"⚠️  Testing='{testing}' has no automated A/B build path — drafting ONE plain email. "
+              "Build the variation manually in HubSpot if this is meant to be a test:", base_id)
+    return spawn(base_id)
+
+
 def prepare():
-    """Pre-send sweep so marking a subject test's base 'Ready to Go' sends the WHOLE A/B test,
-    not just Variant A: (1) fan any un-fanned, Ready subject test; (2) once a group's Variant A
-    is Ready, mark every sibling Ready too. Acts ONLY on approved (Ready) tests; idempotent."""
+    """Pre-send sweep so marking a test's base 'Ready to Go' sends the WHOLE A/B test,
+    not just Variant A: (1) fan any un-fanned, Ready subject/body test; (2) once a group's
+    Variant A is Ready, mark every sibling Ready too. Acts ONLY on approved (Ready) tests;
+    idempotent."""
     def q():
         return notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]
     rdy = lambda p: bool((p.get("Ready to Go") or {}).get("checkbox"))
@@ -187,14 +310,17 @@ def prepare():
     linked = lambda p: bool((p.get("Hubspot Email", {}) or {}).get("url"))
     for r in q():
         p = r["properties"]
-        if snm(p, "Testing") == "Subject Line" and not snm(p, "Variant") and rdy(p) \
-           and len(_variants(p)) >= 2 and not linked(p):
-            print("  prepare: fanning ready test", r["id"]); spawn(r["id"])
+        if snm(p, "Variant") or not rdy(p) or linked(p):
+            continue
+        if snm(p, "Testing") == "Subject Line" and len(_variants(p)) >= 2:
+            print("  prepare: fanning ready subject test", r["id"]); spawn(r["id"])
+        elif snm(p, "Testing") == "Header / Hook" and len(_variants(p, "Body Variants")) >= 2:
+            print("  prepare: fanning ready body test", r["id"]); spawn_body(r["id"])
     # 2) ready-sync: if a group's Variant A is Ready, ready every sibling too
     groups = {}
     for r in q():
         p = r["properties"]
-        if snm(p, "Testing") == "Subject Line" and grp(p):
+        if snm(p, "Testing") in ("Subject Line", "Header / Hook") and grp(p):
             groups.setdefault(grp(p), []).append((r["id"], p))
     for tg, members in groups.items():
         if any(rdy(p) for _, p in members if snm(p, "Variant") == "A"):

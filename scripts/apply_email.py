@@ -53,14 +53,17 @@ def main():
             else:
                 new_blocks.append({"object": "block", "type": "paragraph",
                     "paragraph": {"rich_text": [notion._t(ln)]}})
-        # archive the old body, insert the new body after the hero anchor
+        # INSERT the new body first, THEN archive the old one — the reverse order
+        # once died mid-archive (a Notion error between PATCHes) and left the page
+        # with half a body and nothing inserted. Worst case now is a moment of
+        # duplicated copy, never a destroyed draft.
+        if new_blocks and s["hero_anchor_id"]:
+            notion.insert_after(pid, s["hero_anchor_id"], new_blocks)
         for bid in s["body_ids"]:
             try:
                 notion._call("PATCH", f"/blocks/{bid}", {"archived": True})
             except Exception:
                 pass
-        if new_blocks and s["hero_anchor_id"]:
-            notion.insert_after(pid, s["hero_anchor_id"], new_blocks)
 
     # clear the instruction notes we just actioned (so they don't re-apply)
     if not a.keep_notes:

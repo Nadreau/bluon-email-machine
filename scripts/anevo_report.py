@@ -79,9 +79,16 @@ def _existing_anevo():
 def run():
     camps = sl("/campaigns")
     camps = camps if isinstance(camps, list) else (camps or {}).get("data", [])
-    real = [c for c in camps if c.get("status") in ("ACTIVE", "COMPLETED")
-            and "subsequence" not in str(c.get("name", "")).lower()]
-    print(f"Smartlead: {len(real)} active/completed campaigns")
+    # keep EVERY non-subsequence campaign regardless of status — Anevo routinely
+    # PAUSES finished campaigns instead of completing them (verified Jul 1 2026:
+    # status-filtering to ACTIVE/COMPLETED hid 105K sent / 52 interested leads,
+    # 58% of all real volume). Zero-send campaigns (incl. drafts) drop out at the
+    # sent<=0 guard below.
+    real = [c for c in camps if "subsequence" not in str(c.get("name", "")).lower()]
+    by_status = {}
+    for c in real:
+        by_status[c.get("status")] = by_status.get(c.get("status"), 0) + 1
+    print(f"Smartlead: {len(real)} campaigns ({by_status})")
 
     agg = {}
     for c in real:
@@ -128,9 +135,12 @@ def run():
             notion._call("POST", "/pages", {"parent": {"database_id": REPORTING_DB}, "properties": props})
             print(f"  + {base[:48]:50} sent {sent:>6}  reply {g['reply']:>3}  leads {g['interested']:>2}")
 
-    # archive stale Anevo rows left over from the old manual-sheet source
+    # archive ONLY true sheet-era leftovers: rows whose name matches NO Smartlead
+    # campaign at all (any status). Never archive on status alone — a paused
+    # campaign's history must survive on the dashboard.
+    all_names = {_base_name(c.get("name")) for c in camps}
     for subj, pid in existing.items():
-        if subj not in keep:
+        if subj not in keep and subj not in all_names:
             notion._call("PATCH", f"/pages/{pid}", {"archived": True})
             print(f"  - archived stale (sheet-era): {subj[:50]}")
     print(f"Anevo reporting refreshed: {len(keep)} live campaigns")

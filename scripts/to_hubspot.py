@@ -31,10 +31,14 @@ FNAME_TOKEN = '{{ contact.firstname }}'
 # to.contactIlsLists via the API, though the config persists in the actual send (confirmed:
 # live A/B emails keep their lists in the UI). So make_draft sets them before A/B conversion.
 SUPPRESSION_LISTS = ["24067", "24459", "24637"]  # Active Suppression Segment · The Suppression Nexus · Imanie's old prospecting
-AUDIENCE_LISTS = {   # last week's actual sends; update if segments change
-    "Residential": ["24711", "24714", "24708", "24712", "24710", "24707",
-                    "24706", "24703", "24700", "24704", "24702", "24699"],  # all but Commercial Contractors, eng+uneng
-    "Commercial":  ["24713", "24709", "24705", "24701"],                    # Commercial Contractors, eng+uneng
+AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
+    # Residential = all but Commercial Contractors, eng+uneng. The two ServiceTitan
+    # lists (24707 eng / 24699 uneng) were REMOVED Jul 1 2026: ServiceTitan now gets
+    # its own send, and leaving them here would double-send ~12K ST contacts.
+    "Residential":  ["24711", "24714", "24708", "24712", "24710",
+                     "24706", "24703", "24700", "24704", "24702"],
+    "Commercial":   ["24713", "24709", "24705", "24701"],                    # Commercial Contractors, eng+uneng
+    "ServiceTitan": ["24707", "24699"],   # ENGAGED (6.2K) + UNENGAGED (5.8K) ServiceTitan Potentials
 }
 
 
@@ -272,6 +276,16 @@ def make_draft(page_id):
     # body: rich text module (headline + flow, with any moved image inlined in place)
     widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(info, flow, eid)
 
+    # inbox preview line: the template carries a preview_text widget — set it from the
+    # page's "Preview:" line (it used to be silently dropped and the cloned template's
+    # stale preview shipped instead).
+    if info.get("preview"):
+        if "preview_text" in widgets:
+            widgets["preview_text"].setdefault("body", {})["value"] = info["preview"]
+        else:
+            print("  ⚠️ no preview_text widget on the template clone — set the preview in the HubSpot UI:",
+                  info["preview"])
+
     # CTA: the native button module (text + tracked destination)
     btn = widgets[BUTTON_MODULE].setdefault("body", {})
     btn["text"] = info["cta"] or "Book a Demo"
@@ -342,31 +356,31 @@ def snapshot(page_id, info, pr, landing_url=None):
         print("  landing page snapshot skipped (", lp, "):", e)
 
 
-def make_ab_variation(base_page, b_page):
-    """Subject A/B test: make the 2nd row a NATIVE HubSpot A/B variation of the base's
-    email (same body, different subject) — ONE A/B test, not two separate emails. HubSpot
-    A/B is 2 versions max; recipients stay a UI step (the API can't set them on an A/B
-    email). Falls back to a standalone draft if the variation can't be created."""
+def _create_variation(base_page, b_page):
+    """Shared plumbing: create the native HubSpot A/B variation of the base row's
+    email. Returns (variation_id, b_pr, b_name) or None (caller falls back to a
+    standalone draft)."""
     base_pr = notion._call("GET", f"/pages/{base_page}")["properties"]
     m = re.search(r"/edit/(\d+)", (base_pr.get("Hubspot Email", {}) or {}).get("url") or "")
     if not m:
-        print("  base email missing — standalone draft for B"); return make_draft(b_page)
+        print("  base email missing — standalone draft for B"); return None
     b_pr = notion._call("GET", f"/pages/{b_page}")["properties"]
-    b_subject = "".join(x.get("plain_text", "") for x in (b_pr.get("Subject", {}).get("rich_text") or [])) \
-        or "".join(x.get("plain_text", "") for x in b_pr.get("Email", {}).get("title", []))
     b_name = "".join(x.get("plain_text", "") for x in b_pr.get("Email", {}).get("title", []))
     try:
         var = hs("POST", "/marketing/v3/emails/ab-test/create-variation",
                  {"contentId": m.group(1), "variationName": "B"})
     except SystemExit as e:
-        print("  create-variation failed — standalone draft for B:", e); return make_draft(b_page)
+        print("  create-variation failed — standalone draft for B:", e); return None
     vid = var.get("id")
     if not vid:
-        print("  no variation id — standalone draft for B"); return make_draft(b_page)
-    hs("PATCH", f"/marketing/v3/emails/{vid}", {"subject": b_subject, "name": b_name})
+        print("  no variation id — standalone draft for B"); return None
+    return vid, b_pr, b_name
+
+
+def _finish_variation(b_page, b_pr, vid, label):
     url = f"https://app.hubspot.com/email/{PORTAL}/edit/{vid}/content"
     notion._call("PATCH", f"/pages/{b_page}", {"properties": {"Hubspot Email": {"url": url}}})
-    print(f"  native A/B variation B (subject {b_subject!r}): {url}")
+    print(f"  native A/B variation B ({label}): {url}")
     try:
         snapshot(b_page, notion.parse_draft_page(b_page), b_pr)
     except Exception as e:
@@ -374,21 +388,89 @@ def make_ab_variation(base_page, b_page):
     return url
 
 
+def make_ab_variation(base_page, b_page):
+    """Subject A/B test: make the 2nd row a NATIVE HubSpot A/B variation of the base's
+    email (same body, different subject) — ONE A/B test, not two separate emails. HubSpot
+    A/B is 2 versions max; recipients stay a UI step (the API can't set them on an A/B
+    email). Falls back to a standalone draft if the variation can't be created."""
+    made = _create_variation(base_page, b_page)
+    if not made:
+        return make_draft(b_page)
+    vid, b_pr, b_name = made
+    b_subject = "".join(x.get("plain_text", "") for x in (b_pr.get("Subject", {}).get("rich_text") or [])) or b_name
+    hs("PATCH", f"/marketing/v3/emails/{vid}", {"subject": b_subject, "name": b_name})
+    # the variation inherits A's body verbatim, including the <h2> headline that
+    # echoes A's subject — re-render the body with B's subject as the headline so
+    # the send matches B's Notion mockup.
+    try:
+        content = hs("GET", f"/marketing/v3/emails/{vid}")["content"]
+        widgets = content["widgets"]
+        if BODY_MODULE in widgets:
+            b_info = notion.parse_draft_page(b_page)
+            _, flow = notion.email_layout(b_info)
+            widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(b_info, flow, vid)
+            hs("PATCH", f"/marketing/v3/emails/{vid}", {"content": {"widgets": widgets}})
+    except Exception as e:
+        print("  B headline re-render skipped:", e)
+    return _finish_variation(b_page, b_pr, vid, f"subject {b_subject!r}")
+
+
+def make_ab_body_variation(base_page, b_page):
+    """Body (Header/Hook) A/B test: same subject, different body. Creates the native
+    variation, then swaps in the B row's page body (the hook paragraph differs) while
+    the subject stays the master's."""
+    made = _create_variation(base_page, b_page)
+    if not made:
+        return make_draft(b_page)
+    vid, b_pr, b_name = made
+    b_info = notion.parse_draft_page(b_page)
+    content = hs("GET", f"/marketing/v3/emails/{vid}")["content"]
+    widgets = content["widgets"]
+    if BODY_MODULE not in widgets:
+        print("  ⚠️ variation has no body module — body swap failed, fix in the HubSpot UI")
+        return _finish_variation(b_page, b_pr, vid, "body (SWAP FAILED)")
+    _, flow = notion.email_layout(b_info)
+    widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(b_info, flow, vid)
+    hs("PATCH", f"/marketing/v3/emails/{vid}", {"name": b_name, "content": {"widgets": widgets}})
+    hook = "".join(x.get("plain_text", "") for x in (b_pr.get("Hook", {}) or {}).get("rich_text", []))
+    return _finish_variation(b_page, b_pr, vid, f"body hook {hook[:50]!r}")
+
+
 def process(page_id):
-    """Approve-once: a subject-test base expands into its A/B variant row, then becomes ONE
-    native HubSpot A/B test (base = version A, the sibling = variation B) — not two separate
-    emails. A plain (non-test) row just gets its own draft."""
+    """Approve-once: a test base (subject OR body) expands into its A/B variant row,
+    then becomes ONE native HubSpot A/B test (base = version A, the sibling = variation
+    B) — not two separate emails. A plain (non-test) row just gets its own draft."""
     import variants
-    ids = variants.spawn(page_id)                 # [base] or [base, B] (capped at 2)
+    pr0 = notion._call("GET", f"/pages/{page_id}")["properties"]
+    v0 = ((pr0.get("Variant", {}) or {}).get("select") or {}).get("name")
+    if v0 and v0 != "A":
+        # a fanned SIBLING landed here (the --ready sweep sees it too). Never draft it
+        # standalone — reroute to the group's base, which pairs this row as the native
+        # A/B variation. (This was how B used to ship as a second separate email.)
+        tg = "".join(x.get("plain_text", "") for x in (pr0.get("Test Group", {}).get("rich_text") or []))
+        for r in notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]:
+            p = r["properties"]
+            g = "".join(x.get("plain_text", "") for x in (p.get("Test Group", {}).get("rich_text") or []))
+            if g == tg and ((p.get("Variant", {}) or {}).get("select") or {}).get("name") == "A":
+                print(f"  sibling {v0} rerouted to its base row {r['id']}")
+                return process(r["id"])
+        print(f"  ⚠️ sibling {v0} has no base (Variant A) row in group {tg!r} — NOT drafting it "
+              "standalone. Fix the group, then re-run.")
+        return
+    ids = variants.route(page_id)                 # [base] or [base, B] (capped at 2)
     base = ids[0]
     base_pr = notion._call("GET", f"/pages/{base}")["properties"]
+    testing = ((base_pr.get("Testing", {}) or {}).get("select") or {}).get("name") or ""
     if not (base_pr.get("Hubspot Email", {}) or {}).get("url"):
         make_draft(base)                          # version A (or a standalone email)
-    for b in ids[1:]:                             # subject-test sibling → native A/B variation
+    for b in ids[1:]:                             # test sibling → native A/B variation
         b_pr = notion._call("GET", f"/pages/{b}")["properties"]
         if (b_pr.get("Hubspot Email", {}) or {}).get("url"):
             continue                              # already drafted — re-fires no-op
-        make_ab_variation(base, b)
+        if testing == "Header / Hook":
+            make_ab_body_variation(base, b)
+        else:
+            make_ab_variation(base, b)
     if len(ids) > 1:
         # publish the whole set together so the spawned variant doesn't need a second
         # manual check; already drafted + linked, so the re-fired webhook just no-ops.

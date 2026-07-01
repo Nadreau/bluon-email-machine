@@ -97,19 +97,6 @@ def load_rows():
     return rows
 
 
-def group(rows):
-    """week -> {wk_key, emails: {test -> [variants...]}}"""
-    weeks = {}
-    for r in rows:
-        w = weeks.setdefault(r["week"], {"wk_key": r["wk_key"], "emails": {}})
-        w["wk_key"] = max(w["wk_key"], r["wk_key"])
-        w["emails"].setdefault(r["test"], []).append(r)
-    for w in weeks.values():
-        for vs in w["emails"].values():
-            vs.sort(key=lambda r: r["variant"] or "Z")
-    return weeks
-
-
 # ---------- page blocks ----------
 def clear_page(page_id):
     cur = None
@@ -142,13 +129,20 @@ def _reupload(url):
 
 def _email_callout(variants):
     """HubSpot A/B read — both versions sent, which is doing better (no winner/contest
-    framing). HubSpot only; Anevo cold-email is rendered as its own table."""
+    framing). Once HubSpot's own test window decided (Winner checkbox), say so plainly:
+    that version also went to the rest of the list, which is why the per-version numbers
+    below are test-window sends, not the whole blast. HubSpot only; Anevo cold-email is
+    rendered as its own table."""
     fmt = lambda v: f"{v['variant']} {pctf(v['ctr'])} CTR"
     keyf = lambda v: (v["ctr"] or 0, v["open"] or 0)
     ranked = sorted(variants, key=keyf, reverse=True)
     lead = "Both versions sent.  " if len(variants) == 2 else "All versions sent.  "
     parts = [rt(lead, bold=True)]
-    if len(variants) >= 2 and keyf(ranked[0]) != keyf(ranked[1]):
+    crowned = next((v for v in variants if v.get("winner")), None)
+    if crowned and len(variants) >= 2:
+        parts += [rt(f"{crowned['variant']} did better in the test window and went out to the rest of the list — "),
+                  rt(" vs ".join(fmt(v) for v in ranked))]
+    elif len(variants) >= 2 and keyf(ranked[0]) != keyf(ranked[1]):
         parts += [rt(f"{ranked[0]['variant']} is doing better so far — "),
                   rt(" vs ".join(fmt(v) for v in ranked))]
     else:
@@ -243,10 +237,11 @@ def build():
     for week, wk in order:
         hs, an = wk["hs"], wk["an"]
         bits = ([f"{len(hs)} HubSpot"] if hs else []) + ([f"{len(an)} Anevo"] if an else [])
+        label = "Earlier sends (no date on record)" if week == "Undated" else f"Week of {week}"
         notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
             {"object": "block", "type": "divider", "divider": {}},
             {"object": "block", "type": "heading_1", "heading_1": {"rich_text": [
-                rt(f"Week of {week}"), rt("      " + " · ".join(bits), color="gray")]}},
+                rt(label), rt("      " + " · ".join(bits), color="gray")]}},
         ]})
         # HubSpot A/B galleries for this week
         for test, variants in sorted(hs.items()):
@@ -261,7 +256,7 @@ def build():
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
                 {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
                     rt("📬 Anevo — Cold Email"),
-                    rt(f"      {len(an)} campaign{'s' if len(an) != 1 else ''}", color="gray")]}},
+                    rt(f"      {len(an)} campaign{'s' if len(an) != 1 else ''} · replies include auto-replies and out-of-office", color="gray")]}},
             ]})
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [_anevo_table(an)]})
         print(f"  Week of {week}: {len(hs)} HubSpot, {len(an)} Anevo")

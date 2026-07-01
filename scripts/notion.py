@@ -6,7 +6,7 @@ media notes" section (free-form, use (( )) for styling hints + paste graphics),
 and the rendered image mockup that Regenerate refreshes from that current state.
 Lean DB holds only metadata + Ready to Go / Regen requested. Read+create only.
 """
-import os, json, re, datetime, urllib.request, urllib.error
+import os, json, re, time, datetime, urllib.request, urllib.error
 
 NV = "2022-06-28"
 API = "https://api.notion.com/v1"
@@ -24,17 +24,27 @@ HERO_HINT = "Hero —"
 
 
 def _call(method, path, body=None):
+    """One Notion API call. Retries 429/409/5xx with backoff; raises RuntimeError
+    (NOT SystemExit) on hard failure — SystemExit inherits BaseException, so it used
+    to sail straight through every `except Exception` guard in the repo and kill
+    sweeps mid-loop (and once left a page body half-archived in apply_email)."""
     if not TOKEN:
-        raise SystemExit("NOTION_TOKEN env var is not set.")
+        raise RuntimeError("NOTION_TOKEN env var is not set.")
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(API + path, data=data, method=method,
-        headers={"Authorization": f"Bearer {TOKEN}", "Notion-Version": NV,
-                 "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        raise SystemExit(f"Notion {method} {path} failed: {e.code} {e.read().decode()[:400]}")
+    last = None
+    for attempt in range(4):
+        req = urllib.request.Request(API + path, data=data, method=method,
+            headers={"Authorization": f"Bearer {TOKEN}", "Notion-Version": NV,
+                     "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode()[:400]
+            if e.code in (409, 429, 500, 502, 503) and attempt < 3:
+                time.sleep(1.5 * (attempt + 1)); last = f"{e.code} {detail}"; continue
+            raise RuntimeError(f"Notion {method} {path} failed: {e.code} {detail}")
+    raise RuntimeError(f"Notion {method} {path} failed after retries: {last}")
 
 
 # ---------- guide + calendar reads ----------
@@ -262,7 +272,7 @@ def parse_draft_page(page_id):
     blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
     section = "email"        # email -> notes -> mockup
     subject, cta, body, notes, style_notes = "", "Book a Demo", [], [], []
-    hero_url, mockup_old_ids, cta_dest = "", [], ""
+    hero_url, mockup_old_ids, cta_dest, preview = "", [], "", ""
     content = []   # ordered email-body stream (images + paras + bullets) so the
                    # image can sit wherever Pete drags it, not just at the top
     for b in blocks:
@@ -298,7 +308,13 @@ def parse_draft_page(page_id):
                 style_notes.append(m.strip("()").strip())
         clean = PAREN.sub("", txt).strip()
         if section == "email":
-            if txt.startswith("Preview:") or txt.startswith("bluon"):
+            if txt.startswith("Preview:"):
+                # capture the inbox preview line (shipped via the preview_text
+                # widget at draft time — it used to be silently dropped, so the
+                # cloned template's stale preview went out instead)
+                preview = clean[len("Preview:"):].strip() or preview
+                continue
+            if txt.startswith("bluon"):
                 continue
             if t == "callout" and ("📅" in txt or "→" in txt):
                 cta = clean.replace("📅", "").replace("→", "").strip() or cta
@@ -319,7 +335,7 @@ def parse_draft_page(page_id):
             if clean and not clean.startswith("e.g. (("):
                 notes.append(clean)
     return {"subject": subject, "body_lines": body, "cta": cta, "cta_dest": cta_dest,
-            "style_notes": style_notes + notes, "hero_url": hero_url,
+            "preview": preview, "style_notes": style_notes + notes, "hero_url": hero_url,
             "content": content, "mockup_old_ids": mockup_old_ids}
 
 
