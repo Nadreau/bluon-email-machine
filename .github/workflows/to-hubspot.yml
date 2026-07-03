@@ -19,7 +19,7 @@ on:
         description: Notion page id
         required: false
   schedule:
-    - cron: "*/30 * * * *"   # safety-net sweep every 30 min (idempotent)
+    - cron: "0 * * * *"   # safety-net sweep every 30 min (idempotent)
 
 permissions:
   contents: read
