@@ -39,13 +39,14 @@ MAX_STAT_ROWS = 20000     # per split — A/B pull safety cap (logs if it trunca
 def sl(path):
     sep = "&" if "?" in path else "?"
     req = urllib.request.Request(f"{BASE}{path}{sep}api_key={KEY}", headers={"User-Agent": UA})
-    for _ in range(3):
+    for attempt in range(4):
         try:
             with urllib.request.urlopen(req, timeout=45) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            if e.code == 429:
-                time.sleep(2); continue
+            # 429 = rate limit; 5xx = Smartlead hiccups on heavy /statistics pages
+            if e.code in (429, 500, 502, 503) and attempt < 3:
+                time.sleep(2 * (attempt + 1)); continue
             raise
     return None
 
@@ -132,7 +133,11 @@ def _ab_summary(splits):
     for c in splits:
         off = 0
         while True:
-            r = sl(f"/campaigns/{c['id']}/statistics?limit=1000&offset={off}")
+            try:
+                r = sl(f"/campaigns/{c['id']}/statistics?limit=1000&offset={off}")
+            except Exception as e:
+                print(f"    NOTE: A/B pull aborted for campaign {c['id']} at offset {off}: {e}")
+                break
             rows = (r or {}).get("data") or []
             for row in rows:
                 last = max(last, (row.get("sent_time") or "")[:10])
@@ -171,15 +176,20 @@ def _last_send(splits):
     Called once per campaign; afterwards the value is cached on the Notion row."""
     last = ""
     for c in splits:
-        r = sl(f"/campaigns/{c['id']}/statistics?limit=1000")
-        rows = (r or {}).get("data") or []
-        total = int(float((r or {}).get("total_stats", 0) or 0))
-        for row in rows:
-            last = max(last, (row.get("sent_time") or "")[:10])
-        if total > len(rows):
-            r2 = sl(f"/campaigns/{c['id']}/statistics?limit=1000&offset={max(0, total - 1000)}")
-            for row in (r2 or {}).get("data") or []:
+        try:
+            r = sl(f"/campaigns/{c['id']}/statistics?limit=1000")
+            rows = (r or {}).get("data") or []
+            total = int(float((r or {}).get("total_stats", 0) or 0))
+            for row in rows:
                 last = max(last, (row.get("sent_time") or "")[:10])
+            if total > len(rows):
+                r2 = sl(f"/campaigns/{c['id']}/statistics?limit=1000&offset={max(0, total - 1000)}")
+                for row in (r2 or {}).get("data") or []:
+                    last = max(last, (row.get("sent_time") or "")[:10])
+        except Exception as e:
+            # leave blank rather than kill the whole refresh — the dashboard then
+            # just shows the start date for this one; retried next run
+            print(f"    NOTE: last-send skipped for campaign {c['id']}: {e}")
     return last
 
 
