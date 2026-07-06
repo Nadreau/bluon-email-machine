@@ -268,31 +268,43 @@ def parse_draft_page(page_id):
     """Pull the current editable email back out of the page for re-rendering.
     Returns subject, body_lines (with (( )) stripped), cta, style_notes (the
     (( )) hints + notes text), hero_url (first image pasted in the email area),
-    and mockup_image_id (existing render to replace)."""
+    and mockup_image_id (existing render to replace).
+
+    BODY A/B pages: a page may split its body into two full versions under
+    '🅰 Variant A' / '🅱 Variant B' headings (subject/preview/hero/CTA shared).
+    Then body_lines/content = version A and body_lines_b/content_b = version B —
+    every existing consumer keeps working on A, and the A/B build path patches
+    the HubSpot variation from B."""
     blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
     section = "email"        # email -> notes -> mockup
-    subject, cta, body, notes, style_notes = "", "Book a Demo", [], [], []
+    variant = "a"            # within the email section: a -> b (if variant headings exist)
+    has_b = False
+    subject, cta, notes, style_notes = "", "Book a Demo", [], []
+    body = {"a": [], "b": []}
+    content = {"a": [], "b": []}   # ordered email-body stream (images + paras + bullets)
     hero_url, mockup_old_ids, cta_dest, preview = "", [], "", ""
-    content = []   # ordered email-body stream (images + paras + bullets) so the
-                   # image can sit wherever Pete drags it, not just at the top
     for b in blocks:
         t = b["type"]; txt = _block_text(b)
         if t == "heading_3" and NOTES_HEADING in txt:
             section = "notes"; continue
         if t == "heading_3" and MOCKUP_HEADING in txt:
             section = "mockup"; continue
+        if t == "heading_3" and "Variant A" in txt and section == "email":
+            variant = "a"; continue
+        if t == "heading_3" and "Variant B" in txt and section == "email":
+            variant = "b"; has_b = True; continue
         if t == "heading_2" and not subject:
             subject = txt.strip(); continue
         if t == "callout" and txt.startswith(HERO_HINT):
             continue
-        if section == "mockup" and t in ("image", "callout"):
-            mockup_old_ids.append(b["id"]); continue   # old render/placeholder to replace
+        if section == "mockup" and t in ("image", "callout", "paragraph"):
+            mockup_old_ids.append(b["id"]); continue   # old render/placeholder/label to replace
         if t == "image":
             url = _image_url(b)
             if not hero_url:          # first pasted image in email/notes = hero
                 hero_url = url
             if section == "email":    # record its POSITION in the email flow
-                content.append({"kind": "image", "url": url})
+                content[variant].append({"kind": "image", "url": url})
             continue
         if txt.startswith("e.g."):
             continue          # the example placeholder callout — ignore entirely
@@ -316,6 +328,8 @@ def parse_draft_page(page_id):
                 continue
             if txt.startswith("bluon"):
                 continue
+            if clean in ("IMAGE", "[IMAGE]", "(IMAGE)"):
+                continue      # human placeholder marking where a graphic goes — never ship it as text
             if t == "callout" and ("📅" in txt or "→" in txt):
                 cta = clean.replace("📅", "").replace("→", "").strip() or cta
                 # destination priority: an explicit (( url )) already won above;
@@ -326,17 +340,31 @@ def parse_draft_page(page_id):
                         cta_dest = href
                 continue
             if t == "bulleted_list_item" and clean:
-                body.append("- " + clean)
-                content.append({"kind": "bullet", "text": clean})
+                body[variant].append("- " + clean)
+                content[variant].append({"kind": "bullet", "text": clean})
             elif t == "paragraph" and clean and "Bluon, Inc." not in clean:
-                body.append(clean)
-                content.append({"kind": "para", "text": clean})
+                body[variant].append(clean)
+                content[variant].append({"kind": "para", "text": clean})
         elif section == "notes":
             if clean and not clean.startswith("e.g. (("):
                 notes.append(clean)
-    return {"subject": subject, "body_lines": body, "cta": cta, "cta_dest": cta_dest,
-            "preview": preview, "style_notes": style_notes + notes, "hero_url": hero_url,
-            "content": content, "mockup_old_ids": mockup_old_ids}
+    out = {"subject": subject, "body_lines": body["a"], "cta": cta, "cta_dest": cta_dest,
+           "preview": preview, "style_notes": style_notes + notes, "hero_url": hero_url,
+           "content": content["a"], "mockup_old_ids": mockup_old_ids}
+    if has_b:
+        out["body_lines_b"] = body["b"]
+        out["content_b"] = content["b"]
+    return out
+
+
+def variant_b_info(info):
+    """A copy of a parsed body-A/B page seen through version B's eyes — the shared
+    frame (subject/preview/CTA/hero) with B's body — so email_layout/body_html/
+    mockups work on it unchanged."""
+    b = dict(info)
+    b["body_lines"] = info.get("body_lines_b") or []
+    b["content"] = info.get("content_b") or []
+    return b
 
 
 YOUTUBE_RE = re.compile(r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})")

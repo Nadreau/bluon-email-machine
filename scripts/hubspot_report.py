@@ -75,6 +75,40 @@ def _img_url(pr):
     return (f.get("file") or {}).get("url") or (f.get("external") or {}).get("url")
 
 
+def _body_test_extras(page_id):
+    """For a page-based body A/B (both versions on one page under Variant A/B
+    headings): the first line each version has that the other doesn't (per-variant
+    dashboard captions, since the subject is identical) + version B's own mockup
+    url from the page's Mockup section. Returns (a_cap, b_cap, b_img) or None."""
+    try:
+        info = notion.parse_draft_page(page_id)
+    except Exception:
+        return None
+    if not info.get("body_lines_b"):
+        return None
+    a, b = info["body_lines"], info["body_lines_b"]
+    a_only = [x for x in a if x not in b]
+    b_only = [y for y in b if y not in a]
+    a_cap = a_only[0] if a_only else None
+    b_cap = b_only[0] if b_only else None
+    b_img, in_mock, after_b = None, False, False
+    try:
+        for blk in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]:
+            t = blk["type"]
+            txt = "".join(x.get("plain_text", "") for x in (blk.get(t, {}).get("rich_text") or []))
+            if t == "heading_3" and notion.MOCKUP_HEADING in txt:
+                in_mock = True; continue
+            if in_mock and t == "paragraph" and "Variant B" in txt:
+                after_b = True; continue
+            if in_mock and after_b and t == "image":
+                f = blk["image"]
+                b_img = (f.get("file") or {}).get("url") or (f.get("external") or {}).get("url")
+                break
+    except Exception:
+        pass
+    return (a_cap, b_cap, b_img)
+
+
 def _campaign_map():
     """primaryEmailCampaignId -> email id, so an A/B master can find its variation
     (the variation's primaryEmailCampaignId = the master's + 2; they share a campaign)."""
@@ -176,10 +210,17 @@ def sync():
         audience = _sel(pr, "Audience")
         sent = (pr.get("Send Date", {}).get("date") or {}).get("start")
         subject = _txt(pr, "Subject") or "".join(x.get("plain_text", "") for x in pr.get("Email", {}).get("title", []))
-        # body tests share one subject — the Hook property is what differs, so
-        # that's what the dashboard should caption each variant column with
-        if _sel(pr, "Testing") == "Header / Hook" and _txt(pr, "Hook"):
-            subject = _txt(pr, "Hook")
+        # body tests share one subject — caption each variant with the line that
+        # actually differs between the page's two versions (+ B's own mockup)
+        b_caption = b_img = None
+        if _sel(pr, "Testing") == "Header / Hook":
+            ex = _body_test_extras(r["id"])
+            if ex:
+                a_cap, b_caption, b_img = ex
+                if a_cap:
+                    subject = a_cap
+            elif _txt(pr, "Hook"):
+                subject = _txt(pr, "Hook")
         cal_variant = _sel(pr, "Variant")
         try:
             email = reporting.hs_email(eid)

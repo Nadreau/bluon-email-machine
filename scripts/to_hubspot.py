@@ -45,10 +45,12 @@ AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
 def personalize(escaped):
     """Turn a generic greeting / placeholder in the (already-escaped) copy into the
     HubSpot first-name token. 'Hey there,' -> 'Hey {{ contact.firstname }},'.
-    Also honors an explicit {firstname} / {first_name} placeholder Pete can type."""
+    Also honors an explicit {firstname} / {first_name} / [firstname] placeholder —
+    Tanner types the square-bracket form, which used to ship literally."""
     escaped = re.sub(r"(?i)\b(hey|hi|hello)([,!]?\s+)there\b",
                      lambda m: m.group(1) + m.group(2) + FNAME_TOKEN, escaped)
     escaped = re.sub(r"\{\{?\s*first[ _]?name\s*\}?\}", FNAME_TOKEN, escaped, flags=re.I)
+    escaped = re.sub(r"\[\s*first[ _]?name\s*\]", FNAME_TOKEN, escaped, flags=re.I)
     return escaped
 
 # Bluon's canonical email layout (the real Non-Anevo Nurture structure), cloned
@@ -415,25 +417,39 @@ def make_ab_variation(base_page, b_page):
     return _finish_variation(b_page, b_pr, vid, f"subject {b_subject!r}")
 
 
-def make_ab_body_variation(base_page, b_page):
-    """Body (Header/Hook) A/B test: same subject, different body. Creates the native
-    variation, then swaps in the B row's page body (the hook paragraph differs) while
-    the subject stays the master's."""
-    made = _create_variation(base_page, b_page)
-    if not made:
-        return make_draft(b_page)
-    vid, b_pr, b_name = made
-    b_info = notion.parse_draft_page(b_page)
+def make_ab_body_variation_page(page_id, info=None):
+    """Body A/B from ONE page holding both versions (the '🅰 Variant A' / '🅱 Variant B'
+    sections): create the native variation of the row's email and swap its body module
+    to version B. Same subject, one calendar row, one HubSpot A/B."""
+    pr = notion._call("GET", f"/pages/{page_id}")["properties"]
+    m = re.search(r"/edit/(\d+)", (pr.get("Hubspot Email", {}) or {}).get("url") or "")
+    if not m:
+        print("  ⚠️ body A/B: row has no HubSpot link — draft version A first"); return None
+    info = info or notion.parse_draft_page(page_id)
+    if not info.get("body_lines_b"):
+        print("  ⚠️ body A/B: no 'Variant B' section on the page — nothing to build"); return None
+    name = "".join(x.get("plain_text", "") for x in pr.get("Email", {}).get("title", []))
+    try:
+        var = hs("POST", "/marketing/v3/emails/ab-test/create-variation",
+                 {"contentId": m.group(1), "variationName": "B"})
+    except SystemExit as e:
+        print("  ⚠️ create-variation failed — build the B version in the HubSpot UI:", e); return None
+    vid = var.get("id")
+    if not vid:
+        print("  ⚠️ no variation id — build the B version in the HubSpot UI"); return None
+    b_info = notion.variant_b_info(info)
     content = hs("GET", f"/marketing/v3/emails/{vid}")["content"]
     widgets = content["widgets"]
     if BODY_MODULE not in widgets:
-        print("  ⚠️ variation has no body module — body swap failed, fix in the HubSpot UI")
-        return _finish_variation(b_page, b_pr, vid, "body (SWAP FAILED)")
+        print("  ⚠️ variation has no body module — swap the body in the HubSpot UI")
+        return vid
     _, flow = notion.email_layout(b_info)
     widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(b_info, flow, vid)
-    hs("PATCH", f"/marketing/v3/emails/{vid}", {"name": b_name, "content": {"widgets": widgets}})
-    hook = "".join(x.get("plain_text", "") for x in (b_pr.get("Hook", {}) or {}).get("rich_text", []))
-    return _finish_variation(b_page, b_pr, vid, f"body hook {hook[:50]!r}")
+    hs("PATCH", f"/marketing/v3/emails/{vid}",
+       {"name": (name + " — B")[:200], "content": {"widgets": widgets}})
+    url = f"https://app.hubspot.com/email/{PORTAL}/edit/{vid}/content"
+    print(f"  native A/B variation B (body version B from the page): {url}")
+    return vid
 
 
 def process(page_id):
@@ -457,20 +473,34 @@ def process(page_id):
         print(f"  ⚠️ sibling {v0} has no base (Variant A) row in group {tg!r} — NOT drafting it "
               "standalone. Fix the group, then re-run.")
         return
+
+    # BODY A/B, page-based: one row whose page holds both versions under
+    # 'Variant A' / 'Variant B' headings. Draft version A, then convert to a
+    # native A/B with the body swapped to version B. Idempotent: once the email
+    # is already A/B, re-fires no-op.
+    info = notion.parse_draft_page(page_id)
+    if info.get("body_lines_b"):
+        pr = pr0
+        if not (pr.get("Hubspot Email", {}) or {}).get("url"):
+            make_draft(page_id)
+            pr = notion._call("GET", f"/pages/{page_id}")["properties"]
+        m = re.search(r"/edit/(\d+)", (pr.get("Hubspot Email", {}) or {}).get("url") or "")
+        if m:
+            email = hs("GET", f"/marketing/v3/emails/{m.group(1)}")
+            if not email.get("isAb"):
+                make_ab_body_variation_page(page_id, notion.parse_draft_page(page_id))
+        return
+
     ids = variants.route(page_id)                 # [base] or [base, B] (capped at 2)
     base = ids[0]
     base_pr = notion._call("GET", f"/pages/{base}")["properties"]
-    testing = ((base_pr.get("Testing", {}) or {}).get("select") or {}).get("name") or ""
     if not (base_pr.get("Hubspot Email", {}) or {}).get("url"):
         make_draft(base)                          # version A (or a standalone email)
-    for b in ids[1:]:                             # test sibling → native A/B variation
+    for b in ids[1:]:                             # subject-test sibling → native A/B variation
         b_pr = notion._call("GET", f"/pages/{b}")["properties"]
         if (b_pr.get("Hubspot Email", {}) or {}).get("url"):
             continue                              # already drafted — re-fires no-op
-        if testing == "Header / Hook":
-            make_ab_body_variation(base, b)
-        else:
-            make_ab_variation(base, b)
+        make_ab_variation(base, b)
     if len(ids) > 1:
         # publish the whole set together so the spawned variant doesn't need a second
         # manual check; already drafted + linked, so the re-fired webhook just no-ops.

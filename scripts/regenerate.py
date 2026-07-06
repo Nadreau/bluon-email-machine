@@ -22,21 +22,34 @@ def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; n
     note = ""
     if info["style_notes"]:
         note = "  [styling notes: " + " | ".join(info["style_notes"])[:120] + "]"
-    top_hero, flow = notion.email_layout(info)   # image at top (default) or moved inline
-    fid = mockup.make_mockup_upload(headline=info["subject"], flow=flow,
-                                    cta=info["cta"], top_hero=top_hero)
-    if not fid:
-        print("RENDER FAILED:", page_id)
-        return False
-    # remove the old render/placeholder, append the fresh image under the Mockup heading
+    # a body-A/B page renders ONE mockup PER VERSION (labeled); a plain page renders one
+    versions = [("", info)]
+    if info.get("body_lines_b"):
+        versions = [("🅰 Variant A", info), ("🅱 Variant B", notion.variant_b_info(info))]
+    children = []
+    top_hero = flow = None   # version A's layout, kept for the Email Image snapshot below
+    for i, (label, vi) in enumerate(versions):
+        vhero, vflow = notion.email_layout(vi)   # image at top (default) or moved inline
+        if i == 0:
+            top_hero, flow = vhero, vflow        # version A
+        fid = mockup.make_mockup_upload(headline=vi["subject"], flow=vflow,
+                                        cta=vi["cta"], top_hero=vhero)
+        if not fid:
+            print("RENDER FAILED:", page_id, label)
+            return False
+        if label:
+            children.append({"object": "block", "type": "paragraph", "paragraph": {
+                "rich_text": [{"type": "text", "text": {"content": label},
+                               "annotations": {"bold": True}}]}})
+        children.append({"object": "block", "type": "image",
+                         "image": {"type": "file_upload", "file_upload": {"id": fid}}})
+    # remove the old renders/placeholders/labels, append the fresh set under the Mockup heading
     for bid in info["mockup_old_ids"]:
         try:
             notion._call("PATCH", f"/blocks/{bid}", {"archived": True})
         except Exception:
             pass
-    notion._call("PATCH", f"/blocks/{page_id}/children",
-                 {"children": [{"object": "block", "type": "image",
-                                "image": {"type": "file_upload", "file_upload": {"id": fid}}}]})
+    notion._call("PATCH", f"/blocks/{page_id}/children", {"children": children})
     # Also refresh the "Email Image" file property (the report-time snapshot of how the
     # email sends) so it never goes STALE after a copy edit. It was previously written
     # once at HubSpot-push time only — which is why some sent rows had no image and one
