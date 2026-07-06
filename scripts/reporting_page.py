@@ -1,13 +1,10 @@
 """Render the "📊 Email Reporting" dashboard page from the Email Reporting DB.
 
 Mirrors the Bluon ads reporting style (the Meta/Google dashboards): one clean page,
-broken down into obvious sections with plain-English text between them. HubSpot sends
-are grouped WEEK -> EMAIL -> VARIATION, each variation showing its mockup. Anevo
-cold-email campaigns are NOT grouped by week — a campaign drips over multiple weeks
-(Tanner, 7/6 call) — they get one section split by status: currently-running campaigns
-(with progress + any subject A/B tests) up front, finished/idle ones in a toggle.
-The page is fully WIPED AND REBUILT every run (the Google-ads-dashboard pattern) so
-the organization never drifts — edit THIS SCRIPT, not the page.
+broken down into obvious sections with plain-English text between them, grouped
+WEEK -> EMAIL -> VARIATION, each variation showing its mockup. The page is fully
+WIPED AND REBUILT every run (the Google-ads-dashboard pattern) so the organization
+never drifts — edit THIS SCRIPT, not the page.
 
 Source of truth = the Email Reporting DB (one row per sent variant, HubSpot + Anevo).
 This script only READS that DB and only WRITES the dashboard page; it never touches
@@ -45,6 +42,13 @@ def comma(n):
 def kfmt(n):
     n = n or 0
     return f"{n/1000:.1f}K" if n >= 1000 else str(int(n))
+
+def dfmt(iso):
+    """'2026-07-06...' -> 'Jul 6' (blank-safe)."""
+    try:
+        return datetime.date.fromisoformat(iso[:10]).strftime("%b %-d")
+    except Exception:
+        return ""
 
 
 def _num(pr, k):
@@ -88,12 +92,10 @@ def load_rows():
                 "replies": _num(pr, "Replies"),
                 "leads": _num(pr, "Leads (Interested)"),
                 "winner": bool(pr.get("Winner", {}).get("checkbox")),
-                "cstatus": _sel(pr, "Campaign Status") or "",
-                "progress": _num(pr, "Progress"),
-                "ab": _txt(pr, "A/B Tests"),
                 "link": pr.get("HubSpot Link", {}).get("url"),
                 "img": _img_url(pr),
                 "sent": sent,
+                "last_send": (pr.get("Last Send", {}).get("date") or {}).get("start"),
                 "week": notion._week_of(sent) if sent else "Undated",
                 "wk_key": sent[:10] if sent else "0000",
             })
@@ -162,73 +164,35 @@ def _cell(text, **ann):
     return [rt(str(text), **ann)]
 
 
-def _anevo_table(rows, *, progress_col=False):
-    """Cold-email campaigns as a compact table — Campaign | (Progress) | Started | Sent |
-    Open | Replies | Interested. Replies + interested leads are the real cold-email KPIs
-    (opens are noisy). 'Started' is the campaign start date — sends drip out for weeks
-    after it, so it is NOT a send date."""
+def _anevo_table(rows):
+    """Cold-email campaigns as a compact table — Campaign | Sent on | Sent | Open |
+    Replies | Interested. Replies + interested leads are the real cold-email KPIs (opens
+    are noisy). 'Sent on' = the ACTUAL send dates: a campaign starts on its named date
+    but drips for days/weeks, so a range 'Jul 1 → Jul 6' means emails went out through
+    Jul 6 (Tanner's ask — start date alone was misleading)."""
     rows = sorted(rows, key=lambda r: r["wk_key"], reverse=True)
-    head = [_cell("Campaign", bold=True)]
-    if progress_col:
-        head.append(_cell("Progress", bold=True))
-    head += [_cell("Started", bold=True), _cell("Sent", bold=True), _cell("Open", bold=True),
-             _cell("Replies", bold=True), _cell("Interested", bold=True)]
-    trs = [{"type": "table_row", "table_row": {"cells": head}}]
+    trs = [{"type": "table_row", "table_row": {"cells": [
+        _cell("Campaign", bold=True), _cell("Sent on", bold=True), _cell("Sent", bold=True),
+        _cell("Open", bold=True), _cell("Replies", bold=True), _cell("Interested", bold=True)]}}]
     for r in rows:
-        cells = [_cell((r["subject"] or "—")[:60])]
-        if progress_col:
-            cells.append(_cell(pctf(r["progress"]) if r["progress"] is not None else "—"))
-        cells += [
-            _cell(r["sent"][:10] if r["sent"] else "—"),
+        start, last = dfmt(r["sent"] or ""), dfmt(r["last_send"] or "")
+        dates = f"{start} → {last}" if last and last != start else (start or last or "—")
+        trs.append({"type": "table_row", "table_row": {"cells": [
+            _cell((r["subject"] or "—")[:60]),
+            _cell(dates),
             _cell(comma(r["recipients"])),
             _cell(pctf(r["open"])),
             _cell(int(r["replies"] or 0)),
             _cell(int(r["leads"] or 0)),
-        ]
-        trs.append({"type": "table_row", "table_row": {"cells": cells}})
+        ]}})
     return {"object": "block", "type": "table",
-            "table": {"table_width": len(head), "has_column_header": True, "has_row_header": False, "children": trs}}
-
-
-def _anevo_section(rows):
-    """The whole Anevo block: running campaigns (progress + A/B tests) up front,
-    finished/idle campaigns in a toggle. Returns a list of blocks."""
-    live = [r for r in rows if r["cstatus"] == "Running"]
-    past = [r for r in rows if r["cstatus"] != "Running"]
-    blocks = [
-        {"object": "block", "type": "divider", "divider": {}},
-        {"object": "block", "type": "heading_1", "heading_1": {"rich_text": [
-            rt("📬 Anevo — Cold Email"),
-            rt(f"      {len(live)} running · {len(past)} finished/idle", color="gray")]}},
-        {"object": "block", "type": "callout",
-         "callout": {"icon": {"emoji": "⏳"}, "color": GRAY, "rich_text": [
-             rt("A campaign drips out over multiple weeks, so these aren't grouped by send week. ", bold=True),
-             rt("Below: what's still actively sending, how far through its lead list it is, and any subject "
-                "A/B tests inside it. Finished campaigns are tucked in the toggle. "
-                "Replies include auto-replies and out-of-office."),
-         ]}},
-    ]
-    if live:
-        blocks.append(_anevo_table(live, progress_col=True))
-        for r in live:
-            if r["ab"]:
-                for line in r["ab"].splitlines():
-                    blocks.append({"object": "block", "type": "bulleted_list_item",
-                                   "bulleted_list_item": {"rich_text": [
-                                       rt(f"{(r['subject'] or '')[:40]} — ", bold=True), rt(line)]}})
-    else:
-        blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
-            rt("No campaigns actively sending right now.", italic=True, color="gray")]}})
-    if past:
-        blocks.append({"object": "block", "type": "toggle", "toggle": {
-            "rich_text": [rt(f"Finished & idle campaigns ({len(past)}, all-time)", bold=True)],
-            "children": [_anevo_table(past, progress_col=True)]}})
-    return blocks
+            "table": {"table_width": 6, "has_column_header": True, "has_row_header": False, "children": trs}}
 
 
 def _variant_caption(v):
     head = [rt(f"{v['variant']}", bold=True), rt(f"  {v['subject']}")]
-    stats = rt(f"\n{pctf(v['open'])} open · {pctf(v['ctr'])} CTR · {comma(v['recipients'])} sent · {v['clicks'] or 0} clicks", color="gray")
+    when = f" · sent {dfmt(v['sent'])}" if v.get("sent") else ""
+    stats = rt(f"\n{pctf(v['open'])} open · {pctf(v['ctr'])} CTR · {comma(v['recipients'])} sent · {v['clicks'] or 0} clicks{when}", color="gray")
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": head + [stats]}}
 
 
@@ -255,16 +219,15 @@ def build():
     if not rows:
         print("no rows in source DB; nothing to render")
         return
-    # Anevo campaigns span weeks — they get one status-grouped section, never week buckets
-    anevo = [r for r in rows if r["source"] == "Anevo"]
-    # group HubSpot sends by week; within a week, A/B tests (by test)
+    # group EVERYTHING by week; within a week, HubSpot A/B tests (by test) + Anevo list
     weeks = {}
     for r in rows:
-        if r["source"] == "Anevo":
-            continue
-        w = weeks.setdefault(r["week"], {"wk_key": r["wk_key"], "hs": {}})
+        w = weeks.setdefault(r["week"], {"wk_key": r["wk_key"], "hs": {}, "an": []})
         w["wk_key"] = max(w["wk_key"], r["wk_key"])
-        w["hs"].setdefault(r["test"], []).append(r)
+        if r["source"] == "Anevo":
+            w["an"].append(r)
+        else:
+            w["hs"].setdefault(r["test"], []).append(r)
     for w in weeks.values():
         for vs in w["hs"].values():
             vs.sort(key=lambda r: r["variant"] or "Z")
@@ -274,33 +237,26 @@ def build():
         order = order[:MAX_WEEKS]
 
     n_hs = sum(len(wk["hs"]) for _, wk in order)
-    n_live = sum(1 for r in anevo if r["cstatus"] == "Running")
+    n_an = sum(len(wk["an"]) for _, wk in order)
     ts = datetime.datetime.now().strftime("%b %-d")
 
     clear_page(REPORT_PAGE)
     notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
         {"object": "block", "type": "callout",
          "callout": {"icon": {"emoji": "📬"}, "color": "blue_background", "rich_text": [
-             rt("Anevo cold-email up top (campaigns run across weeks, so they're grouped by status, "
-                "not send week), then every HubSpot send, newest week first."),
-             rt(f"\n{n_live} Anevo running · {len(anevo)} Anevo all-time · {n_hs} HubSpot tests · updated {ts}", color="gray"),
+             rt("Every send, newest week first — HubSpot A/B tests and Anevo cold-email campaigns, together by week."),
+             rt(f"\n{n_hs} HubSpot tests · {n_an} Anevo campaigns · {len(order)} weeks · updated {ts}", color="gray"),
          ]}},
     ]})
 
-    # Anevo first — the "what's live right now" read Tanner asked for
-    if anevo:
-        notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": _anevo_section(anevo)})
-        print(f"  Anevo: {n_live} running, {len(anevo) - n_live} past")
-
     for week, wk in order:
-        hs = wk["hs"]
-        if not hs:
-            continue
+        hs, an = wk["hs"], wk["an"]
+        bits = ([f"{len(hs)} HubSpot"] if hs else []) + ([f"{len(an)} Anevo"] if an else [])
         label = "Earlier sends (no date on record)" if week == "Undated" else f"Week of {week}"
         notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
             {"object": "block", "type": "divider", "divider": {}},
             {"object": "block", "type": "heading_1", "heading_1": {"rich_text": [
-                rt(label), rt(f"      {len(hs)} HubSpot", color="gray")]}},
+                rt(label), rt("      " + " · ".join(bits), color="gray")]}},
         ]})
         # HubSpot A/B galleries for this week
         for test, variants in sorted(hs.items()):
@@ -310,7 +266,15 @@ def build():
                 _email_callout(variants),
             ]})
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": _variants_block(variants)})
-        print(f"  Week of {week}: {len(hs)} HubSpot")
+        # Anevo campaigns for this week (compact table)
+        if an:
+            notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
+                {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+                    rt("📬 Anevo — Cold Email"),
+                    rt(f"      {len(an)} campaign{'s' if len(an) != 1 else ''} · replies include auto-replies and out-of-office", color="gray")]}},
+            ]})
+            notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [_anevo_table(an)]})
+        print(f"  Week of {week}: {len(hs)} HubSpot, {len(an)} Anevo")
     print("dashboard rebuilt:", REPORT_PAGE)
 
 

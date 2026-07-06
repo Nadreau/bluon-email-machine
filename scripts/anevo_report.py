@@ -5,14 +5,14 @@ Anevo (our cold-email partner) runs on Smartlead. This pulls each campaign's rea
 campaign tagged Source=Anevo, so HubSpot + Anevo email reporting live in one DB. Replaces the
 old manual-Google-Sheet source now that we have API access.
 
-Campaigns are NOT tied to a send date — one campaign drips over multiple weeks (Tanner,
-7/6 call). So each row also carries:
-  Campaign Status  Running / Paused / Completed — "Running" = ACTIVE, or paused mid-flight
-                   but still sending in the last 14 days (Anevo abandons finished campaigns
-                   as PAUSED, so status alone can't be trusted)
-  Progress         leads fully worked (completed+blocked+stopped) / total leads
-  A/B Tests        per-subject-variant stats (Anevo A/B = spintax subjects; each send logs
-                   the exact subject used), aggregated for running campaigns only
+A campaign STARTS on its named date but drips sends for days/weeks (Tanner, 7/6 call) —
+so besides "Sent" (the start date, which drives the dashboard's week grouping), each row
+carries "Last Send" (the date emails ACTUALLY last went out, from /statistics sent_time;
+cached on the row once a campaign is no longer running). Extra data columns kept on the
+DB only (not rendered on the dashboard): Campaign Status (Running/Paused/Completed —
+"Running" = ACTIVE or paused-but-sent-in-last-14d, since Anevo abandons finished
+campaigns as PAUSED), Progress (leads fully worked / total), A/B Tests (per-subject
+spintax variant stats, running campaigns only).
 
 Each Smartlead "campaign" is split per inbox provider ([... (Gmail)] / (Outlook) / (Others));
 we combine those splits into one logical campaign. "Standard Subsequence" (DRAFTED) follow-ups
@@ -82,6 +82,7 @@ def _ensure_props():
             {"name": "Completed", "color": "gray"}]}},
         "Progress": {"number": {"format": "percent"}},
         "A/B Tests": {"rich_text": {}},
+        "Last Send": {"date": {}},
     }
     missing = {k: v for k, v in want.items() if k not in have}
     if missing:
@@ -100,7 +101,10 @@ def _existing_anevo():
             pr = r["properties"]
             if (pr.get("Source", {}).get("select") or {}).get("name") == "Anevo":
                 subj = "".join(x.get("plain_text", "") for x in (pr.get("Subject", {}).get("rich_text") or []))
-                out[subj.strip()] = r["id"]
+                out[subj.strip()] = {
+                    "id": r["id"],
+                    "last_send": (pr.get("Last Send", {}).get("date") or {}).get("start"),
+                }
         if not res.get("has_more"):
             break
         cur = res.get("next_cursor")
@@ -122,14 +126,16 @@ def _recent_sent(splits):
 def _ab_summary(splits):
     """Anevo's A/B = spintax subjects; every /statistics row logs the exact subject sent.
     Aggregate sent/open/reply per (step, subject) across the splits and describe any step
-    that actually has 2+ subjects. Returns '' when there's no test."""
-    agg = {}
+    that actually has 2+ subjects. Returns (text, last_send) — the last-send date rides
+    along for free since this already walks every send row. text='' when there's no test."""
+    agg, last = {}, ""
     for c in splits:
         off = 0
         while True:
             r = sl(f"/campaigns/{c['id']}/statistics?limit=1000&offset={off}")
             rows = (r or {}).get("data") or []
             for row in rows:
+                last = max(last, (row.get("sent_time") or "")[:10])
                 key = (row.get("sequence_number") or 1, (row.get("email_subject") or "").strip())
                 g = agg.setdefault(key, {"sent": 0, "open": 0, "reply": 0})
                 g["sent"] += 1
@@ -156,7 +162,25 @@ def _ab_summary(splits):
             vs.append(f"{chr(65 + i)} “{s}” — {g['sent']:,} sent · {g['open'] / g['sent'] * 100:.0f}% open · {g['reply']} repl")
         label = f"Step {step} subject test: " if len(steps) > 1 else "Subject test: "
         parts.append(label + "  |  ".join(vs))
-    return "\n".join(parts)[:1900]
+    return "\n".join(parts)[:1900], last
+
+
+def _last_send(splits):
+    """Latest actual send date for a finished/idle campaign — sample the first and last
+    /statistics page of each split (row order isn't guaranteed, so take the max of both).
+    Called once per campaign; afterwards the value is cached on the Notion row."""
+    last = ""
+    for c in splits:
+        r = sl(f"/campaigns/{c['id']}/statistics?limit=1000")
+        rows = (r or {}).get("data") or []
+        total = int(float((r or {}).get("total_stats", 0) or 0))
+        for row in rows:
+            last = max(last, (row.get("sent_time") or "")[:10])
+        if total > len(rows):
+            r2 = sl(f"/campaigns/{c['id']}/statistics?limit=1000&offset={max(0, total - 1000)}")
+            for row in (r2 or {}).get("data") or []:
+                last = max(last, (row.get("sent_time") or "")[:10])
+    return last
 
 
 def run():
@@ -214,7 +238,14 @@ def run():
             status = "Running"
         else:
             status = "Paused"
-        ab = _ab_summary(g["splits"]) if status == "Running" else ""
+        ex = existing.get(base.strip())
+        ab, last_send = "", ""
+        if status == "Running":
+            ab, last_send = _ab_summary(g["splits"])
+        elif ex and ex.get("last_send"):
+            last_send = ex["last_send"]      # finished campaigns can't gain sends — reuse
+        else:
+            last_send = _last_send(g["splits"])
 
         aud = _audience(base); date = _send_date(base)
         props = {
@@ -237,23 +268,25 @@ def run():
         if aud:
             props["Audience"] = {"select": {"name": aud}}
         if date:
-            props["Sent"] = {"date": {"start": date}}   # campaign START date (from the name)
+            props["Sent"] = {"date": {"start": date}}   # campaign START date (drives week grouping)
+        if last_send:
+            props["Last Send"] = {"date": {"start": last_send}}
         key = base.strip(); keep.add(key)
         pct = f"{progress * 100:3.0f}%" if progress is not None else "  —"
-        if key in existing:
-            notion._call("PATCH", f"/pages/{existing[key]}", {"properties": props})
-            print(f"  ~ {base[:44]:46} {status:<9} {pct}  sent {sent:>6}  reply {g['reply']:>3}  leads {g['interested']:>2}")
+        if ex:
+            notion._call("PATCH", f"/pages/{ex['id']}", {"properties": props})
+            print(f"  ~ {base[:44]:46} {status:<9} {pct}  last {last_send or '—':<10}  sent {sent:>6}  reply {g['reply']:>3}")
         else:
             notion._call("POST", "/pages", {"parent": {"database_id": REPORTING_DB}, "properties": props})
-            print(f"  + {base[:44]:46} {status:<9} {pct}  sent {sent:>6}  reply {g['reply']:>3}  leads {g['interested']:>2}")
+            print(f"  + {base[:44]:46} {status:<9} {pct}  last {last_send or '—':<10}  sent {sent:>6}  reply {g['reply']:>3}")
 
     # archive ONLY true sheet-era leftovers: rows whose name matches NO Smartlead
     # campaign at all (any status). Never archive on status alone — a paused
     # campaign's history must survive on the dashboard.
     all_names = {_base_name(c.get("name")) for c in camps}
-    for subj, pid in existing.items():
+    for subj, ex in existing.items():
         if subj not in keep and subj not in all_names:
-            notion._call("PATCH", f"/pages/{pid}", {"archived": True})
+            notion._call("PATCH", f"/pages/{ex['id']}", {"archived": True})
             print(f"  - archived stale (sheet-era): {subj[:50]}")
     print(f"Anevo reporting refreshed: {len(keep)} campaigns")
 
