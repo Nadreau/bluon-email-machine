@@ -1,10 +1,11 @@
-"""Shared Notion helpers for the Bluon Email Machine.
+"""Shared Notion helpers for the Bluon Email + Text Machine.
 
-The draft page IS the editable email: stylized blocks (branded header, blue
-headline, hero, body, CTA, footer) that Pete edits directly, a "Formatting &
-media notes" section (free-form, use (( )) for styling hints + paste graphics),
-and the rendered image mockup that Regenerate refreshes from that current state.
-Lean DB holds only metadata + Ready to Go / Regen requested. Read+create only.
+The draft page IS the editable email (or text): stylized blocks (branded header,
+headline, body, CTA, footer for email; a message bubble for text) that the team
+edits directly, then the rendered mockup that Regenerate refreshes from that
+current state. An A/B test is shown ON the page as Variant A / Variant B, each
+with its own copy + mockup — nothing else. Lean DB holds only metadata + Ready
+to Go / Regen requested. Read+create only.
 """
 import os, json, re, time, datetime, urllib.request, urllib.error
 
@@ -17,8 +18,6 @@ CALENDAR_DB_ID = "379576a5-c12d-816e-a09a-c7bbd50a4c26"
 BLUE = "blue"
 FOOTER = ("Bluon, Inc., 9160 Irvine Center Drive, Suite 100, Irvine, CA  ·  "
           "Unsubscribe | Manage preferences")
-PAREN = re.compile(r"\(\(.*?\)\)")           # (( styling note )) — stripped from copy
-NOTES_HEADING = "Formatting & media notes"
 MOCKUP_HEADING = "Mockup"
 HERO_HINT = "Hero —"
 
@@ -149,14 +148,7 @@ def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None, he
         "rich_text": [_t("📅  " + (cta or "Book a Demo") + "  →", bold=True, color=BLUE)],
         "icon": {"type": "emoji", "emoji": "👉"}, "color": "blue_background"}})
     b.append(_para(FOOTER, color="gray"))
-    # formatting & media notes
-    b.append({"object": "block", "type": "divider", "divider": {}})
-    b.append({"object": "block", "type": "heading_3",
-              "heading_3": {"rich_text": [_t(NOTES_HEADING + "   ·   use (( )) for styling")]}})
-    b.append({"object": "block", "type": "callout", "callout": {
-        "rich_text": [_t("e.g. ((hero: use the Peterman testimonial)) · ((move CTA above bullets)) — paste extra graphics here too", color="gray")],
-        "icon": {"type": "emoji", "emoji": "✍️"}, "color": "gray_background"}})
-    # mockup
+    # mockup (edit the copy above; press Regenerate to re-render this)
     b.append({"object": "block", "type": "divider", "divider": {}})
     b.append({"object": "block", "type": "heading_3",
               "heading_3": {"rich_text": [_t("📧  " + MOCKUP_HEADING + " — press 🔄 Regenerate Mockup after edits (gives it ~30–60s to re-render)")]}})
@@ -170,14 +162,15 @@ def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None, he
     return b
 
 
-def styled_text_blocks(message, note=""):
+def styled_text_blocks(message):
     """A TEXT (SMS) draft page — the machine handles texts too, not just emails.
-    Shape: brand header, the message as an SMS-style bubble, a character/segment
-    count, and the shared notes section. No subject/preview/CTA/footer/mockup
-    (those are email furniture); Channel="Text" rows are skipped by to_hubspot."""
+    Shape: brand header, the message as an SMS-style bubble (this IS the text's
+    mockup), and a character/segment count. No email furniture; Channel="Text"
+    rows are skipped by to_hubspot. A text A/B is two bubbles under Variant A /
+    Variant B headings (same as an email A/B)."""
     n = len(message)
     segs = 1 if n <= 160 else (n + 152) // 153
-    b = [
+    return [
         {"object": "block", "type": "callout", "callout": {
             "rich_text": [_t("bluon", bold=True, color=BLUE), _t("   TEXT MESSAGE", color=BLUE)],
             "icon": {"type": "emoji", "emoji": "💬"}, "color": "blue_background"}},
@@ -188,15 +181,6 @@ def styled_text_blocks(message, note=""):
               + ("   ·   [first name] personalizes at send" if "[first name]" in message.lower() or "[firstname]" in message.lower() else ""),
               italic=True, color="gray"),
     ]
-    if note:
-        b.append(_para(note, color="gray"))
-    b.append({"object": "block", "type": "divider", "divider": {}})
-    b.append({"object": "block", "type": "heading_3",
-              "heading_3": {"rich_text": [_t(NOTES_HEADING + "   ·   use (( )) for styling")]}})
-    b.append({"object": "block", "type": "callout", "callout": {
-        "rich_text": [_t("e.g. ((tighten to 1 segment)) · ((send from the Bluon number))", color="gray")],
-        "icon": {"type": "emoji", "emoji": "✍️"}, "color": "gray_background"}})
-    return b
 
 
 def _week_of(send_date):
@@ -295,9 +279,10 @@ def _image_url(b):
 
 def parse_draft_page(page_id):
     """Pull the current editable email back out of the page for re-rendering.
-    Returns subject, body_lines (with (( )) stripped), cta, style_notes (the
-    (( )) hints + notes text), hero_url (first image pasted in the email area),
-    and mockup_image_id (existing render to replace).
+    Returns subject, body_lines, cta, cta_dest (from a hyperlink on the CTA),
+    preview, hero_url (first pasted image), and mockup_old_ids (existing render
+    to replace). style_notes is kept as an empty list for back-compat only —
+    the old "Formatting & media notes" / (( )) styling mechanism is gone.
 
     BODY A/B pages: a page may split its body into two full versions under
     '🅰 Variant A' / '🅱 Variant B' headings (subject/preview/hero/CTA shared).
@@ -305,17 +290,15 @@ def parse_draft_page(page_id):
     every existing consumer keeps working on A, and the A/B build path patches
     the HubSpot variation from B."""
     blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
-    section = "email"        # email -> notes -> mockup
+    section = "email"        # email -> mockup
     variant = "a"            # within the email section: a -> b (if variant headings exist)
     has_b = False
-    subject, cta, notes, style_notes = "", "Book a Demo", [], []
+    subject, cta = "", "Book a Demo"
     body = {"a": [], "b": []}
     content = {"a": [], "b": []}   # ordered email-body stream (images + paras + bullets)
     hero_url, mockup_old_ids, cta_dest, preview = "", [], "", ""
     for b in blocks:
         t = b["type"]; txt = _block_text(b)
-        if t == "heading_3" and NOTES_HEADING in txt:
-            section = "notes"; continue
         if t == "heading_3" and MOCKUP_HEADING in txt:
             section = "mockup"; continue
         if t == "heading_3" and "Variant A" in txt and section == "email":
@@ -330,24 +313,12 @@ def parse_draft_page(page_id):
             mockup_old_ids.append(b["id"]); continue   # old render/placeholder/label to replace
         if t == "image":
             url = _image_url(b)
-            if not hero_url:          # first pasted image in email/notes = hero
+            if not hero_url:          # first pasted image in the email = hero
                 hero_url = url
             if section == "email":    # record its POSITION in the email flow
                 content[variant].append({"kind": "image", "url": url})
             continue
-        if txt.startswith("e.g."):
-            continue          # the example placeholder callout — ignore entirely
-        # collect (( )) hints. A URL inside (( )) = the CTA button's destination
-        # (editable right next to the CTA, never rendered in the mockup) — not a
-        # styling note.
-        for m in PAREN.findall(txt):
-            inner = m.strip("()").strip().lstrip("→ ").strip()
-            if inner.startswith(("http://", "https://")):
-                if not cta_dest:
-                    cta_dest = inner
-            else:
-                style_notes.append(m.strip("()").strip())
-        clean = PAREN.sub("", txt).strip()
+        clean = txt.strip()
         if section == "email":
             if txt.startswith("Preview:"):
                 # capture the inbox preview line (shipped via the preview_text
@@ -361,8 +332,7 @@ def parse_draft_page(page_id):
                 continue      # human placeholder marking where a graphic goes — never ship it as text
             if t == "callout" and ("📅" in txt or "→" in txt):
                 cta = clean.replace("📅", "").replace("→", "").strip() or cta
-                # destination priority: an explicit (( url )) already won above;
-                # otherwise honor a hyperlink Pete dropped right on the CTA text.
+                # honor a hyperlink dropped right on the CTA text as its destination
                 if not cta_dest:
                     href = _first_href(b)
                     if href and href.startswith(("http://", "https://")):
@@ -374,11 +344,8 @@ def parse_draft_page(page_id):
             elif t == "paragraph" and clean and "Bluon, Inc." not in clean:
                 body[variant].append(clean)
                 content[variant].append({"kind": "para", "text": clean})
-        elif section == "notes":
-            if clean and not clean.startswith("e.g. (("):
-                notes.append(clean)
     out = {"subject": subject, "body_lines": body["a"], "cta": cta, "cta_dest": cta_dest,
-           "preview": preview, "style_notes": style_notes + notes, "hero_url": hero_url,
+           "preview": preview, "style_notes": [], "hero_url": hero_url,
            "content": content["a"], "mockup_old_ids": mockup_old_ids}
     if has_b:
         out["body_lines_b"] = body["b"]
@@ -444,8 +411,6 @@ def parse_structure(page_id):
            "body_ids": [], "note_ids": [], "mockup_old_ids": []}
     for b in blocks:
         t = b["type"]; txt = _block_text(b); bid = b["id"]
-        if t == "heading_3" and NOTES_HEADING in txt:
-            section = "notes"; continue
         if t == "heading_3" and MOCKUP_HEADING in txt:
             section = "mockup"; continue
         if t == "heading_2" and out["subject_id"] is None:

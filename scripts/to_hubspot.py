@@ -264,7 +264,7 @@ def make_draft(page_id):
 
     content = hs("GET", f"/marketing/v3/emails/{eid}")["content"]
     widgets = content["widgets"]   # ALL modules — we mutate in place + send the whole dict
-    # CTA destination: the (( url )) set next to the CTA wins, else the row's
+    # CTA destination: a hyperlink dropped on the CTA text wins, else the row's
     # Landing Page, else the Get Demo page — all UTM-tagged. base_lp is the exact
     # destination the button uses (pre-UTM); snapshot() records THAT as the Landing
     # Page so the property never drifts from where the button actually points.
