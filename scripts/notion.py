@@ -170,6 +170,35 @@ def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None, he
     return b
 
 
+def styled_text_blocks(message, note=""):
+    """A TEXT (SMS) draft page — the machine handles texts too, not just emails.
+    Shape: brand header, the message as an SMS-style bubble, a character/segment
+    count, and the shared notes section. No subject/preview/CTA/footer/mockup
+    (those are email furniture); Channel="Text" rows are skipped by to_hubspot."""
+    n = len(message)
+    segs = 1 if n <= 160 else (n + 152) // 153
+    b = [
+        {"object": "block", "type": "callout", "callout": {
+            "rich_text": [_t("bluon", bold=True, color=BLUE), _t("   TEXT MESSAGE", color=BLUE)],
+            "icon": {"type": "emoji", "emoji": "💬"}, "color": "blue_background"}},
+        {"object": "block", "type": "callout", "callout": {
+            "rich_text": [_t(message)],
+            "icon": {"type": "emoji", "emoji": "📱"}, "color": "gray_background"}},
+        _para(f"{n} characters · ~{segs} SMS segment{'s' if segs != 1 else ''}"
+              + ("   ·   [first name] personalizes at send" if "[first name]" in message.lower() or "[firstname]" in message.lower() else ""),
+              italic=True, color="gray"),
+    ]
+    if note:
+        b.append(_para(note, color="gray"))
+    b.append({"object": "block", "type": "divider", "divider": {}})
+    b.append({"object": "block", "type": "heading_3",
+              "heading_3": {"rich_text": [_t(NOTES_HEADING + "   ·   use (( )) for styling")]}})
+    b.append({"object": "block", "type": "callout", "callout": {
+        "rich_text": [_t("e.g. ((tighten to 1 segment)) · ((send from the Bluon number))", color="gray")],
+        "icon": {"type": "emoji", "emoji": "✍️"}, "color": "gray_background"}})
+    return b
+
+
 def _week_of(send_date):
     try:
         d = datetime.date.fromisoformat(send_date[:10])  # tolerate datetime (YYYY-MM-DDThh:mm)

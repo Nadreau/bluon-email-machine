@@ -458,6 +458,14 @@ def process(page_id):
     B) — not two separate emails. A plain (non-test) row just gets its own draft."""
     import variants
     pr0 = notion._call("GET", f"/pages/{page_id}")["properties"]
+    # HubSpot is only ONE channel of the machine. A Text (SMS) or Anevo row that
+    # gets marked Ready must never be turned into a HubSpot marketing email —
+    # those sends happen in their own tools. (Before this guard, the --ready
+    # sweep drafted a HubSpot email for ANY Ready row, whatever its Channel.)
+    ch0 = ((pr0.get("Channel", {}) or {}).get("select") or {}).get("name") or ""
+    if ch0 and ch0 != "HubSpot":
+        print(f"  skipping (Channel={ch0}, not a HubSpot send):", page_id)
+        return
     v0 = ((pr0.get("Variant", {}) or {}).get("select") or {}).get("name")
     if v0 and v0 != "A":
         # a fanned SIBLING landed here (the --ready sweep sees it too). Never draft it
