@@ -139,9 +139,11 @@ def styled_email_blocks(*, subject, preview, body_lines, cta, image_fid=None, he
         ln = ln.strip()
         if not ln:
             continue
-        if ln[:1] in ("-", "•", "*"):
+        # a bullet needs "- " (dash + space); "-Bluon" (a sign-off) is a paragraph,
+        # not a check-bullet. The old ln[:1] test turned "-Bluon" into a ✅ bullet.
+        if ln[:2] in ("- ", "• ", "* "):
             b.append({"object": "block", "type": "bulleted_list_item",
-                      "bulleted_list_item": {"rich_text": [_t(ln.lstrip("-•* ").strip(), color=BLUE)]}})
+                      "bulleted_list_item": {"rich_text": [_t(ln[2:].strip(), color=BLUE)]}})
         else:
             b.append(_para(ln))
     b.append({"object": "block", "type": "callout", "callout": {

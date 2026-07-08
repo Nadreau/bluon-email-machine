@@ -295,9 +295,12 @@ def make_draft(page_id):
 
     # top hero module: populate it when the image belongs on top; otherwise REMOVE it
     # so the template's default image doesn't show above an inline-placed graphic.
-    if top_hero is None:
+    if top_hero is None or top_hero[0] == "default":
+        # No hero when there's no real graphic/video: the default "banner" just
+        # re-rendered the subject (which the body already shows as an h2), so it
+        # was a redundant repeat + carried a stray play button. Drop it.
         widgets.pop(HERO_MODULE, None)
-        hero_kind = "inline (moved into body)"
+        hero_kind = "inline (moved into body)" if top_hero is None else "none (no banner)"
     else:
         src, link = host_top_hero(top_hero, info, eid)
         hero_kind = {"video": "video thumbnail", "image": "top image",
