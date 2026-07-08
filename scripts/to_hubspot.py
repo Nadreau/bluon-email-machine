@@ -462,6 +462,10 @@ def process(page_id):
     # gets marked Ready must never be turned into a HubSpot marketing email —
     # those sends happen in their own tools. (Before this guard, the --ready
     # sweep drafted a HubSpot email for ANY Ready row, whatever its Channel.)
+    ty0 = ((pr0.get("Type", {}) or {}).get("select") or {}).get("name") or ""
+    if ty0 in ("📋 Week Plan", "🔮 Vision"):
+        print(f"  skipping (Type={ty0}, a planning row, not a send):", page_id)
+        return
     ch0 = ((pr0.get("Channel", {}) or {}).get("select") or {}).get("name") or ""
     if ch0 and ch0 != "HubSpot":
         print(f"  skipping (Channel={ch0}, not a HubSpot send):", page_id)
