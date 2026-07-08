@@ -311,7 +311,12 @@ def make_draft(page_id):
 
     # Send the FULL widgets dict (logo + footer untouched) so the footer /
     # unsubscribe survive — patching only the 3 changed modules dropped them.
+    # Reset the sender: template clones come in as whoever built the source (e.g.
+    # "Clay Naiser") — the campaign convention is Bluon / contactus@bluon.com, and
+    # the copy signs off "-Bluon" / "The Bluon Team". (Kelsey can switch to a real
+    # person in the UI if deliverability calls for it.)
     patch = {"subject": info["subject"], "name": name,
+             "from": {"fromName": "Bluon", "replyTo": "contactus@bluon.com"},
              "content": {"widgets": widgets}}
     hs("PATCH", f"/marketing/v3/emails/{eid}", patch)
     print("  hero:", hero_kind)
@@ -492,11 +497,12 @@ def process(page_id):
     # is already A/B, re-fires no-op.
     info = notion.parse_draft_page(page_id)
     if info.get("body_lines_b"):
-        pr = pr0
-        if not (pr.get("Hubspot Email", {}) or {}).get("url"):
-            make_draft(page_id)
-            pr = notion._call("GET", f"/pages/{page_id}")["properties"]
-        m = re.search(r"/edit/(\d+)", (pr.get("Hubspot Email", {}) or {}).get("url") or "")
+        # use make_draft's RETURNED url, not a Notion re-read — the link write lags
+        # and re-reading raced to empty, so the A/B variation silently never built.
+        url = (pr0.get("Hubspot Email", {}) or {}).get("url")
+        if not url:
+            url = make_draft(page_id)
+        m = re.search(r"/edit/(\d+)", url or "")
         if m:
             email = hs("GET", f"/marketing/v3/emails/{m.group(1)}")
             if not email.get("isAb"):
