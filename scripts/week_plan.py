@@ -131,6 +131,7 @@ def upsert(monday_iso, content):
     props = {
         "Email": {"title": [{"type": "text", "text": {"content": f"🗓️ Week of {lbl} — Plan"}}]},
         "Type": {"select": {"name": PLAN_TYPE}},
+        "Audience": {"select": {"name": "Admin"}},   # Niko's conditional coloring keys on this
         "Status": {"select": {"name": "This Week"}},
         "Send Date": {"date": {"start": monday_iso}},
         "Ready to Go": {"checkbox": False},
