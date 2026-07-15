@@ -84,6 +84,7 @@ def _ensure_props():
         "Progress": {"number": {"format": "percent"}},
         "A/B Tests": {"rich_text": {}},
         "Last Send": {"date": {}},
+        "Provider Split": {"rich_text": {}},
     }
     missing = {k: v for k, v in want.items() if k not in have}
     if missing:
@@ -216,7 +217,7 @@ def run():
     for base, splits in groups.items():
         g = {"sent": 0, "open": 0, "click": 0, "reply": 0, "bounce": 0, "unsub": 0,
              "interested": 0, "total": 0, "done": 0, "splits": splits,
-             "statuses": {c.get("status") for c in splits}}
+             "statuses": {c.get("status") for c in splits}, "providers": {}}
         for c in splits:
             a = sl(f"/campaigns/{c['id']}/analytics")
             if not isinstance(a, dict):
@@ -224,6 +225,14 @@ def run():
             iv = lambda k: int(float(a.get(k, 0) or 0))
             g["sent"] += iv("sent_count"); g["open"] += iv("open_count"); g["click"] += iv("click_count")
             g["reply"] += iv("reply_count"); g["bounce"] += iv("bounce_count"); g["unsub"] += iv("unsubscribed_count")
+            # per-provider bucket (the '(Gmail)/(Outlook)/(Others)' split this campaign came from) —
+            # Anevo's own MX-record analysis, for free: Outlook "clicks" are security-scanner
+            # noise (~95% phantom rate), Gmail is the closest to real engagement.
+            pm = re.search(r"\((Gmail|Outlook|Others)\)\s*$", (c.get("name") or "").strip())
+            p = g["providers"].setdefault(pm.group(1) if pm else "Unsplit",
+                                          {"sent": 0, "open": 0, "click": 0, "reply": 0})
+            p["sent"] += iv("sent_count"); p["open"] += iv("open_count")
+            p["click"] += iv("click_count"); p["reply"] += iv("reply_count")
             ls = a.get("campaign_lead_stats") or {}
             g["interested"] += int(ls.get("interested", 0) or 0)
             g["total"] += int(ls.get("total", 0) or 0)
@@ -275,6 +284,16 @@ def run():
             "Progress": {"number": round(progress, 4) if progress is not None else None},
             "A/B Tests": {"rich_text": ([{"type": "text", "text": {"content": ab}}] if ab else [])},
         }
+        # provider split only when the campaign was actually split by inbox provider
+        bits = []
+        for prov in ("Gmail", "Outlook", "Others"):
+            p = g["providers"].get(prov)
+            if p and p["sent"]:
+                bits.append(f"{prov}: {p['sent']:,} sent · {p['open'] / p['sent'] * 100:.0f}% open · "
+                            f"{p['click'] / p['sent'] * 100:.0f}% click · {p['reply']} repl")
+        split_txt = "  |  ".join(bits) if len(bits) >= 2 else ""
+        props["Provider Split"] = {"rich_text": ([{"type": "text", "text": {"content": split_txt[:1900]}}]
+                                                 if split_txt else [])}
         if aud:
             props["Audience"] = {"select": {"name": aud}}
         if date:

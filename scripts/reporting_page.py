@@ -92,6 +92,9 @@ def load_rows():
                 "replies": _num(pr, "Replies"),
                 "leads": _num(pr, "Leads (Interested)"),
                 "winner": bool(pr.get("Winner", {}).get("checkbox")),
+                "status": _sel(pr, "Campaign Status"),
+                "progress": _num(pr, "Progress"),
+                "psplit": _txt(pr, "Provider Split"),
                 "link": pr.get("HubSpot Link", {}).get("url"),
                 "img": _img_url(pr),
                 "sent": sent,
@@ -165,20 +168,27 @@ def _cell(text, **ann):
 
 
 def _anevo_table(rows):
-    """Cold-email campaigns as a compact table — Campaign | Sent on | Sent | Open |
-    Replies | Interested. Replies + interested leads are the real cold-email KPIs (opens
-    are noisy). 'Sent on' = the ACTUAL send dates: a campaign starts on its named date
-    but drips for days/weeks, so a range 'Jul 1 → Jul 6' means emails went out through
-    Jul 6 (Tanner's ask — start date alone was misleading)."""
+    """Cold-email campaigns as a compact table — Campaign | Status | Sent on | Sent |
+    Open | Replies | Interested. Replies + interested leads are the real cold-email KPIs
+    (opens are noisy). 'Sent on' = the ACTUAL send dates: a campaign starts on its named
+    date but drips for days/weeks, so a range 'Jul 1 → Jul 6' means emails went out
+    through Jul 6 (Tanner's ask — start date alone was misleading). Status/Progress come
+    from the DB (Niko's ask Jul 15 — the dashboard never showed whether a campaign was
+    still in flight)."""
     rows = sorted(rows, key=lambda r: r["wk_key"], reverse=True)
     trs = [{"type": "table_row", "table_row": {"cells": [
-        _cell("Campaign", bold=True), _cell("Sent on", bold=True), _cell("Sent", bold=True),
-        _cell("Open", bold=True), _cell("Replies", bold=True), _cell("Interested", bold=True)]}}]
+        _cell("Campaign", bold=True), _cell("Status", bold=True), _cell("Sent on", bold=True),
+        _cell("Sent", bold=True), _cell("Open", bold=True), _cell("Replies", bold=True),
+        _cell("Interested", bold=True)]}}]
     for r in rows:
         start, last = dfmt(r["sent"] or ""), dfmt(r["last_send"] or "")
         dates = f"{start} → {last}" if last and last != start else (start or last or "—")
+        status = r.get("status") or "—"
+        if status == "Running" and r.get("progress") is not None:
+            status = f"Running · {r['progress'] * 100:.0f}% through list"
         trs.append({"type": "table_row", "table_row": {"cells": [
             _cell((r["subject"] or "—")[:60]),
+            _cell(status),
             _cell(dates),
             _cell(comma(r["recipients"])),
             _cell(pctf(r["open"])),
@@ -186,7 +196,73 @@ def _anevo_table(rows):
             _cell(int(r["leads"] or 0)),
         ]}})
     return {"object": "block", "type": "table",
-            "table": {"table_width": 6, "has_column_header": True, "has_row_header": False, "children": trs}}
+            "table": {"table_width": 7, "has_column_header": True, "has_row_header": False, "children": trs}}
+
+
+def _provider_notes(rows):
+    """Per-provider (Gmail/Outlook/Others) breakdown under the Anevo table — the same
+    MX-bucket read Anevo shows on their slides. The point isn't the extra numbers, it's
+    the trust calibration: Outlook 'clicks' are security scanners pre-clicking links
+    (~95% phantom rate), so Gmail is the closest thing to real engagement."""
+    noted = [r for r in rows if r.get("psplit")]
+    if not noted:
+        return []
+    out = [{"object": "block", "type": "callout",
+            "callout": {"icon": {"emoji": "🔎"}, "color": GRAY, "rich_text": [
+                rt("By inbox provider — ", bold=True),
+                rt("Outlook clicks are security scanners, not people (their filters pre-click "
+                   "links); Gmail numbers are the closest to real. Judge by replies + interested.")]}}]
+    for r in sorted(noted, key=lambda r: r["wk_key"], reverse=True):
+        out.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
+            rt((r["subject"] or "—")[:60], bold=True),
+            rt(f"\n{r['psplit']}", color="gray")]}})
+    return out
+
+
+def _rollup_table(rows):
+    """Cold-email weekly rollup — the at-a-glance table Anevo opens their calls with
+    (Niko's ask Jul 15): Week | Sent | Opened | Clicks | Replies | Interested, newest
+    first, TOTAL row at the bottom. Weeks are campaign START weeks (sends drip after)."""
+    weeks = {}
+    for r in rows:
+        if r["source"] != "Anevo" or not (r["recipients"] or 0):
+            continue
+        w = weeks.setdefault(r["week"], {"key": r["wk_key"], "sent": 0, "opened": 0,
+                                         "clicks": 0, "replies": 0, "leads": 0})
+        w["key"] = max(w["key"], r["wk_key"])
+        rec = int(r["recipients"] or 0)
+        w["sent"] += rec
+        w["opened"] += round((r["open"] or 0) * rec)
+        w["clicks"] += int(r["clicks"] or 0)
+        w["replies"] += int(r["replies"] or 0)
+        w["leads"] += int(r["leads"] or 0)
+    order = sorted(weeks.items(), key=lambda kv: kv[1]["key"], reverse=True)[:6]
+    if not order:
+        return []
+    tot = {k: sum(w[k] for _, w in order) for k in ("sent", "opened", "clicks", "replies", "leads")}
+    def row(label, w, bold=False):
+        op = f"{comma(w['opened'])} ({w['opened'] / w['sent'] * 100:.0f}%)" if w["sent"] else "—"
+        return {"type": "table_row", "table_row": {"cells": [
+            _cell(label, bold=bold), _cell(comma(w["sent"]), bold=bold), _cell(op, bold=bold),
+            _cell(comma(w["clicks"]), bold=bold), _cell(comma(w["replies"]), bold=bold),
+            _cell(comma(w["leads"]), bold=bold)]}}
+    trs = [{"type": "table_row", "table_row": {"cells": [
+        _cell("Week of", bold=True), _cell("Sent", bold=True), _cell("Opened", bold=True),
+        _cell("Clicks", bold=True), _cell("Replies", bold=True), _cell("Interested", bold=True)]}}]
+    trs += [row(week, w) for week, w in order]
+    trs.append(row("TOTAL", tot, bold=True))
+    return [
+        {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [
+            rt("Cold email at a glance"),
+            rt(f"      last {len(order)} weeks · by campaign start week", color="gray")]}},
+        {"object": "block", "type": "table",
+         "table": {"table_width": 6, "has_column_header": True, "has_row_header": False,
+                   "children": trs}},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
+            rt("Opens and clicks include inbox security scanners (they pre-open and pre-click), "
+               "so treat them as directional — replies and interested leads are the real numbers. "
+               "Week-by-week detail below.", color="gray")]}},
+    ]
 
 
 def _variant_caption(v):
@@ -247,7 +323,7 @@ def build():
              rt("Every send, newest week first — HubSpot A/B tests and Anevo cold-email campaigns, together by week."),
              rt(f"\n{n_hs} HubSpot tests · {n_an} Anevo campaigns · {len(order)} weeks · updated {ts}", color="gray"),
          ]}},
-    ]})
+    ] + _rollup_table(rows)})
 
     for week, wk in order:
         hs, an = wk["hs"], wk["an"]
@@ -273,7 +349,8 @@ def build():
                     rt("📬 Anevo — Cold Email"),
                     rt(f"      {len(an)} campaign{'s' if len(an) != 1 else ''} · replies include auto-replies and out-of-office", color="gray")]}},
             ]})
-            notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [_anevo_table(an)]})
+            notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children",
+                         {"children": [_anevo_table(an)] + _provider_notes(an)})
         print(f"  Week of {week}: {len(hs)} HubSpot, {len(an)} Anevo")
     print("dashboard rebuilt:", REPORT_PAGE)
 
