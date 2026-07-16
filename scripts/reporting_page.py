@@ -12,7 +12,7 @@ the DB or the calendar.
 
   python scripts/reporting_page.py
 """
-import sys, datetime, tempfile, urllib.request
+import sys, re, datetime, tempfile, urllib.request
 import notion, mockup
 
 REPORT_PAGE = "38e576a5-c12d-8187-9c21-f82642db1fa1"      # the rendered dashboard page
@@ -169,57 +169,94 @@ def _cell(text, **ann):
     return [rt(str(text), **ann)]
 
 
-def _anevo_table(rows):
-    """Cold-email campaigns as a compact table — Campaign (+subject line) | Status |
-    Sent on | Sent | Open | Clicks | Replies | Interested. Replies + interested leads
-    are the real cold-email KPIs; Clicks added Jul 16 (Tanner) to compare against
-    landing-page views — read them next to the provider notes (Outlook clicks are
-    scanner noise). Subject line(s) show in gray under the campaign name; a multi-
-    subject test gets a 🧪 breakout below the table. 'Sent on' = the ACTUAL send dates:
-    a campaign starts on its named date but drips for days/weeks."""
-    rows = sorted(rows, key=lambda r: r["wk_key"], reverse=True)
-    trs = [{"type": "table_row", "table_row": {"cells": [
-        _cell("Campaign", bold=True), _cell("Status", bold=True), _cell("Sent on", bold=True),
-        _cell("Sent", bold=True), _cell("Open", bold=True), _cell("Clicks", bold=True),
-        _cell("Replies", bold=True), _cell("Interested", bold=True)]}}]
-    for r in rows:
-        start, last = dfmt(r["sent"] or ""), dfmt(r["last_send"] or "")
-        dates = f"{start} → {last}" if last and last != start else (start or last or "—")
-        status = r.get("status") or "—"
+def _anevo_cards(rows):
+    """One compact card per cold-email campaign — replaces the old wide table (a
+    multi-subject campaign ballooned its row and left dead space under every number
+    cell) and the separate 🧪 blob (which repeated the campaign name and crammed the
+    variants into one wrapping line). Everything about a campaign lives in ONE callout:
+
+      name — status
+      dates · sent · open · clicks · replies · interested
+      Subject test — per-variant lines, leader marked  (or a single Subject line)
+      By provider — Gmail/Outlook split (scanner-click calibration)
+    """
+    out = []
+    for r in sorted(rows, key=lambda r: r["wk_key"], reverse=True):
+        name = (r["subject"] or "—").replace("[BLUON] ", "")[:70]
+        status = r.get("status") or ""
         if status == "Running" and r.get("progress") is not None:
             status = f"Running · {r['progress'] * 100:.0f}% through list"
-        camp_cell = [rt((r["subject"] or "—")[:60])]
-        if r.get("subject_line"):
-            sl = r["subject_line"]
-            label = "subjects: " if " | " in sl else "subject: "
-            camp_cell.append(rt("\n" + label + sl[:110] + ("…" if len(sl) > 110 else ""), color="gray"))
-        trs.append({"type": "table_row", "table_row": {"cells": [
-            camp_cell,
-            _cell(status),
-            _cell(dates),
-            _cell(comma(r["recipients"])),
-            _cell(pctf(r["open"])),
-            _cell(comma(r["clicks"] or 0)),
-            _cell(int(r["replies"] or 0)),
-            _cell(int(r["leads"] or 0)),
-        ]}})
-    return {"object": "block", "type": "table",
-            "table": {"table_width": 8, "has_column_header": True, "has_row_header": False, "children": trs}}
-
-
-def _subject_tests(rows):
-    """🧪 breakout under the Anevo table for campaigns running a multi-subject test —
-    per-variant sent/open/replies from the send log (Tanner's ask Jul 16)."""
-    out = []
-    for r in rows:
-        if not r.get("ab"):
-            continue
-        parts = [rt("🧪 Subject test — ", bold=True), rt((r["subject"] or "")[:50], bold=True)]
-        for line in r["ab"].split("\n"):
-            if line.strip():
-                parts.append(rt("\n" + line.strip()))
+        start_d, last = dfmt(r["sent"] or ""), dfmt(r["last_send"] or "")
+        dates = f"{start_d} → {last}" if last and last != start_d else (start_d or last or "—")
+        parts = [rt("📬 " + name, bold=True)]
+        if status:
+            parts.append(rt("   " + status, color="gray"))
+        parts.append(rt(f"\n{dates} · {comma(r['recipients'])} sent · {pctf(r['open'])} open · "
+                        f"{comma(r['clicks'] or 0)} clicks · {int(r['replies'] or 0)} replies · "
+                        f"{int(r['leads'] or 0)} interested"))
+        ab = (r.get("ab") or "").strip()
+        if ab:
+            # stored as 'Subject test: A “X” — 612 sent · 68% open · 4 repl  |  B …'.
+            # Heavy spintax shows up as one dominant variant + many ~equal tiny
+            # rotations — that's a ROTATION, not a test, so don't crown a 70-send
+            # "leader" or list 16 lines. Majors (>=5% of sends) get lines; the tail
+            # is summarized.
+            for block in ab.split("\n"):
+                block = block.strip()
+                if not block:
+                    continue
+                label, _, body = block.partition(":")
+                chunks = []
+                for c in (x.strip() for x in body.split("  |  ")):
+                    if not c:
+                        continue
+                    sent = int(m.group(1).replace(",", "")) if (m := re.search(r"([\d,]+) sent", c)) else 0
+                    op = float(m.group(1)) if (m := re.search(r"(\d+)% open", c)) else -1
+                    chunks.append({"txt": c.replace(" 1 repl", " 1 reply").replace(" repl", " replies"),
+                                   "sent": sent, "open": op})
+                if not chunks:
+                    continue
+                total = sum(c["sent"] for c in chunks) or 1
+                majors = [c for c in chunks if c["sent"] / total >= 0.05]
+                minors = [c for c in chunks if c not in majors]
+                if len(majors) >= 2:      # a real test among comparable sends
+                    best = max(majors, key=lambda c: c["open"])
+                    parts.append(rt(f"\n{label.strip()} — {len(majors)} versions", bold=True))
+                    for c in majors[:8]:
+                        parts.append(rt("\n      " + c["txt"]))
+                        if c is best and c["open"] >= 0:
+                            parts.append(rt("   ⟵ leading", bold=True, color="green"))
+                    if minors:
+                        avg = sum(c["sent"] for c in minors) // max(len(minors), 1)
+                        parts.append(rt(f"\n      + {len(minors)} minor rotations (~{avg} sends each)", color="gray"))
+                else:                     # spintax rotation around one main subject
+                    top = sorted(chunks, key=lambda c: -c["sent"])
+                    parts.append(rt(f"\nSubject rotation — {len(chunks)} spins", bold=True))
+                    for c in top[:3]:
+                        parts.append(rt("\n      " + c["txt"]))
+                    if len(top) > 3:
+                        avg = sum(c["sent"] for c in top[3:]) // max(len(top) - 3, 1)
+                        parts.append(rt(f"\n      + {len(top) - 3} more spins (~{avg} sends each)", color="gray"))
+        elif r.get("subject_line"):
+            # sequences give raw spintax '{a|b|c}' — expand it instead of printing braces
+            sl_ = r["subject_line"]
+            subs = []
+            for piece in sl_.split(" | "):
+                m = re.fullmatch(r"\{(.+)\}", piece.strip())
+                subs += [s.strip() for s in m.group(1).split("|")] if m else [piece.strip()]
+            subs = [s for s in dict.fromkeys(subs) if s]
+            if len(subs) > 1:
+                shown = " · ".join("“" + s[:60] + "”" for s in subs[:4])
+                more = f"  + {len(subs) - 4} more" if len(subs) > 4 else ""
+                parts.append(rt(f"\nRotates {len(subs)} subjects — ", bold=True))
+                parts.append(rt(shown + more))
+            elif subs:
+                parts.append(rt("\nSubject — ", bold=True))
+                parts.append(rt("“" + subs[0][:160] + "”"))
+        if r.get("psplit"):
+            parts.append(rt("\nBy provider — " + r["psplit"][:220], color="gray"))
         out.append({"object": "block", "type": "callout",
-                    "callout": {"icon": {"emoji": "🧪"}, "color": GRAY, "rich_text": parts[:98]}})
+                    "callout": {"icon": {"emoji": "✉️"}, "color": GRAY, "rich_text": parts[:98]}})
     return out
 
 
@@ -371,10 +408,10 @@ def build():
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children", {"children": [
                 {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
                     rt("📬 Anevo — Cold Email"),
-                    rt(f"      {len(an)} campaign{'s' if len(an) != 1 else ''} · replies include auto-replies and out-of-office", color="gray")]}},
+                    rt(f"      {len(an)} campaign{'s' if len(an) != 1 else ''} · replies include auto-replies · Outlook clicks are scanner noise, judge by replies + interested", color="gray")]}},
             ]})
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children",
-                         {"children": [_anevo_table(an)] + _subject_tests(an) + _provider_notes(an)})
+                         {"children": _anevo_cards(an)})
         print(f"  Week of {week}: {len(hs)} HubSpot, {len(an)} Anevo")
     print("dashboard rebuilt:", REPORT_PAGE)
 
