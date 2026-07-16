@@ -85,6 +85,7 @@ def _ensure_props():
         "A/B Tests": {"rich_text": {}},
         "Last Send": {"date": {}},
         "Provider Split": {"rich_text": {}},
+        "Subject Line": {"rich_text": {}},
     }
     missing = {k: v for k, v in want.items() if k not in have}
     if missing:
@@ -106,6 +107,8 @@ def _existing_anevo():
                 out[subj.strip()] = {
                     "id": r["id"],
                     "last_send": (pr.get("Last Send", {}).get("date") or {}).get("start"),
+                    "subject_line": "".join(x.get("plain_text", "") for x in
+                                            (pr.get("Subject Line", {}).get("rich_text") or [])),
                 }
         if not res.get("has_more"):
             break
@@ -169,6 +172,26 @@ def _ab_summary(splits):
         label = f"Step {step} subject test: " if len(steps) > 1 else "Subject test: "
         parts.append(label + "  |  ".join(vs))
     return "\n".join(parts)[:1900], last
+
+
+def _subjects(splits):
+    """The campaign's step-1 subject line(s) from /sequences — one cheap call on the
+    first split (splits share the sequence). A subject test shows as multiple variants,
+    joined ' | '. Cached on the row once a campaign is no longer running (Tanner wants
+    the subject visible on the dashboard, and tests called out)."""
+    try:
+        seq = sl(f"/campaigns/{splits[0]['id']}/sequences")
+        seq = seq if isinstance(seq, list) else (seq or {}).get("data", [])
+        step1 = next((s for s in seq if int(s.get("seq_number") or 1) == 1), seq[0] if seq else None)
+        if not step1:
+            return ""
+        subs = [v.get("subject") for v in (step1.get("sequence_variants") or []) if v.get("subject")]
+        if not subs and step1.get("subject"):
+            subs = [step1["subject"]]
+        return " | ".join(dict.fromkeys(subs))[:1900]
+    except Exception as e:
+        print(f"    NOTE: subjects skipped for campaign {splits[0].get('id')}: {e}")
+        return ""
 
 
 def _last_send(splits):
@@ -265,6 +288,11 @@ def run():
             last_send = ex["last_send"]      # finished campaigns can't gain sends — reuse
         else:
             last_send = _last_send(g["splits"])
+        # subject line(s): refetch while running (variants can change), else reuse cache
+        if status == "Running" or not (ex and ex.get("subject_line")):
+            subject_line = _subjects(g["splits"])
+        else:
+            subject_line = ex["subject_line"]
 
         aud = _audience(base); date = _send_date(base)
         props = {
@@ -283,6 +311,8 @@ def run():
             "Campaign Status": {"select": {"name": status}},
             "Progress": {"number": round(progress, 4) if progress is not None else None},
             "A/B Tests": {"rich_text": ([{"type": "text", "text": {"content": ab}}] if ab else [])},
+            "Subject Line": {"rich_text": ([{"type": "text", "text": {"content": subject_line}}]
+                                           if subject_line else [])},
         }
         # provider split only when the campaign was actually split by inbox provider
         bits = []

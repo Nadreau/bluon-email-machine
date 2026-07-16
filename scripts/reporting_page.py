@@ -95,6 +95,8 @@ def load_rows():
                 "status": _sel(pr, "Campaign Status"),
                 "progress": _num(pr, "Progress"),
                 "psplit": _txt(pr, "Provider Split"),
+                "subject_line": _txt(pr, "Subject Line"),
+                "ab": _txt(pr, "A/B Tests"),
                 "link": pr.get("HubSpot Link", {}).get("url"),
                 "img": _img_url(pr),
                 "sent": sent,
@@ -168,35 +170,57 @@ def _cell(text, **ann):
 
 
 def _anevo_table(rows):
-    """Cold-email campaigns as a compact table — Campaign | Status | Sent on | Sent |
-    Open | Replies | Interested. Replies + interested leads are the real cold-email KPIs
-    (opens are noisy). 'Sent on' = the ACTUAL send dates: a campaign starts on its named
-    date but drips for days/weeks, so a range 'Jul 1 → Jul 6' means emails went out
-    through Jul 6 (Tanner's ask — start date alone was misleading). Status/Progress come
-    from the DB (Niko's ask Jul 15 — the dashboard never showed whether a campaign was
-    still in flight)."""
+    """Cold-email campaigns as a compact table — Campaign (+subject line) | Status |
+    Sent on | Sent | Open | Clicks | Replies | Interested. Replies + interested leads
+    are the real cold-email KPIs; Clicks added Jul 16 (Tanner) to compare against
+    landing-page views — read them next to the provider notes (Outlook clicks are
+    scanner noise). Subject line(s) show in gray under the campaign name; a multi-
+    subject test gets a 🧪 breakout below the table. 'Sent on' = the ACTUAL send dates:
+    a campaign starts on its named date but drips for days/weeks."""
     rows = sorted(rows, key=lambda r: r["wk_key"], reverse=True)
     trs = [{"type": "table_row", "table_row": {"cells": [
         _cell("Campaign", bold=True), _cell("Status", bold=True), _cell("Sent on", bold=True),
-        _cell("Sent", bold=True), _cell("Open", bold=True), _cell("Replies", bold=True),
-        _cell("Interested", bold=True)]}}]
+        _cell("Sent", bold=True), _cell("Open", bold=True), _cell("Clicks", bold=True),
+        _cell("Replies", bold=True), _cell("Interested", bold=True)]}}]
     for r in rows:
         start, last = dfmt(r["sent"] or ""), dfmt(r["last_send"] or "")
         dates = f"{start} → {last}" if last and last != start else (start or last or "—")
         status = r.get("status") or "—"
         if status == "Running" and r.get("progress") is not None:
             status = f"Running · {r['progress'] * 100:.0f}% through list"
+        camp_cell = [rt((r["subject"] or "—")[:60])]
+        if r.get("subject_line"):
+            sl = r["subject_line"]
+            label = "subjects: " if " | " in sl else "subject: "
+            camp_cell.append(rt("\n" + label + sl[:110] + ("…" if len(sl) > 110 else ""), color="gray"))
         trs.append({"type": "table_row", "table_row": {"cells": [
-            _cell((r["subject"] or "—")[:60]),
+            camp_cell,
             _cell(status),
             _cell(dates),
             _cell(comma(r["recipients"])),
             _cell(pctf(r["open"])),
+            _cell(comma(r["clicks"] or 0)),
             _cell(int(r["replies"] or 0)),
             _cell(int(r["leads"] or 0)),
         ]}})
     return {"object": "block", "type": "table",
-            "table": {"table_width": 7, "has_column_header": True, "has_row_header": False, "children": trs}}
+            "table": {"table_width": 8, "has_column_header": True, "has_row_header": False, "children": trs}}
+
+
+def _subject_tests(rows):
+    """🧪 breakout under the Anevo table for campaigns running a multi-subject test —
+    per-variant sent/open/replies from the send log (Tanner's ask Jul 16)."""
+    out = []
+    for r in rows:
+        if not r.get("ab"):
+            continue
+        parts = [rt("🧪 Subject test — ", bold=True), rt((r["subject"] or "")[:50], bold=True)]
+        for line in r["ab"].split("\n"):
+            if line.strip():
+                parts.append(rt("\n" + line.strip()))
+        out.append({"object": "block", "type": "callout",
+                    "callout": {"icon": {"emoji": "🧪"}, "color": GRAY, "rich_text": parts[:98]}})
+    return out
 
 
 def _provider_notes(rows):
@@ -350,7 +374,7 @@ def build():
                     rt(f"      {len(an)} campaign{'s' if len(an) != 1 else ''} · replies include auto-replies and out-of-office", color="gray")]}},
             ]})
             notion._call("PATCH", f"/blocks/{REPORT_PAGE}/children",
-                         {"children": [_anevo_table(an)] + _provider_notes(an)})
+                         {"children": [_anevo_table(an)] + _subject_tests(an) + _provider_notes(an)})
         print(f"  Week of {week}: {len(hs)} HubSpot, {len(an)} Anevo")
     print("dashboard rebuilt:", REPORT_PAGE)
 
