@@ -14,16 +14,15 @@ import to_hubspot
 
 BODY = to_hubspot.BODY_MODULE           # module_17406888513524 (rich text)
 BUTTON = to_hubspot.BUTTON_MODULE       # module_17810258159061
-IMG = to_hubspot.HERO_MODULE            # module_17389528910191 (native image module)
-IMG_H = 315                             # 560-wide render of the 1200x675 graphic
+IMG = "module_bodyimg"                  # arbitrary id; module_id comes from the template's image module
+IMG_H = None                            # natural height (HubSpot scales to width)
 
 
 def _image_module(src, template_img_mod):
     m = copy.deepcopy(template_img_mod)
     m["id"] = IMG; m["name"] = IMG
     m.setdefault("body", {})
-    m["body"]["img"] = {"src": src, "alt": "No more wrong parts",
-                        "width": 560, "height": IMG_H, "loading": "disabled"}
+    m["body"]["img"] = {"src": src, "alt": "", "width": 560, "loading": "disabled"}
     m["body"].pop("link", None)          # not a video thumbnail — no click-through
     m["body"]["hs_wrapper_css"] = {"padding-bottom": "10px", "padding-left": "30px",
                                    "padding-right": "30px", "padding-top": "10px"}
@@ -70,8 +69,10 @@ def split(eid, template_img_mod):
 
 
 def _template_img_mod():
+    # the template's known-good native IMAGE module (the hero) is the blueprint;
+    # split() re-ids the copy to IMG so it never collides with a real hero.
     t = to_hubspot.hs("GET", f"/marketing/v3/emails/{to_hubspot.TEMPLATE_EMAIL_ID}")
-    return t["content"]["widgets"][IMG]
+    return t["content"]["widgets"][to_hubspot.HERO_MODULE]
 
 
 if __name__ == "__main__":

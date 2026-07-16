@@ -338,6 +338,16 @@ def make_draft(page_id):
     notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Hubspot Email": {"url": url}}})
     print("HubSpot draft created:", url, "| email id:", eid)
 
+    # any graphic that landed INLINE in the rich-text body will not render in
+    # HubSpot's editor (it re-flows/strips complex HTML) — convert it to a native
+    # image module at the same spot. This is the same fix the parts A/B needed,
+    # now automatic on every build.
+    try:
+        import split_body_image
+        split_body_image.split(eid, split_body_image._template_img_mod())
+    except Exception as e:
+        print("  inline-image split skipped:", e)
+
     snapshot(page_id, info, pr, landing_url=base_lp)
     return url
 
@@ -455,6 +465,11 @@ def make_ab_body_variation_page(page_id, info=None):
     widgets[BODY_MODULE].setdefault("body", {})["html"] = body_html(b_info, flow, vid)
     hs("PATCH", f"/marketing/v3/emails/{vid}",
        {"name": (name + " — B")[:200], "content": {"widgets": widgets}})
+    try:
+        import split_body_image
+        split_body_image.split(vid, split_body_image._template_img_mod())
+    except Exception as e:
+        print("  inline-image split skipped (variation):", e)
     url = f"https://app.hubspot.com/email/{PORTAL}/edit/{vid}/content"
     print(f"  native A/B variation B (body version B from the page): {url}")
     return vid
