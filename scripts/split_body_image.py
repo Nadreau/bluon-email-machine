@@ -41,30 +41,32 @@ def split(eid, template_img_mod):
     src = m.group(1)
     part1 = html[:m.start()].rstrip()
     part2 = html[m.end():].lstrip()
-    if not part2:
-        print(f"  {eid}: image is at the end of the body, no split needed — skip"); return False
 
     widgets[BODY]["body"]["html"] = part1
-    close = copy.deepcopy(widgets[BODY]); close["id"] = "module_bodyclose"; close["name"] = "module_bodyclose"
-    close["body"]["html"] = part2
-    close["body"]["hs_wrapper_css"] = {"padding-bottom": "0px", "padding-left": "30px",
-                                       "padding-right": "30px", "padding-top": "0px"}
-    widgets["module_bodyclose"] = close
     widgets[IMG] = _image_module(src, template_img_mod)
-
-    # rebuild the body column's widget order: part1 -> image -> close -> (button); drop
-    # any standalone section that only referenced the (now-relocated) image module.
+    order = [BODY, IMG]
+    if part2:      # image mid-body → the rest of the copy continues in a close module
+        close = copy.deepcopy(widgets[BODY]); close["id"] = "module_bodyclose"; close["name"] = "module_bodyclose"
+        close["body"]["html"] = part2
+        close["body"]["hs_wrapper_css"] = {"padding-bottom": "0px", "padding-left": "30px",
+                                           "padding-right": "30px", "padding-top": "0px"}
+        widgets["module_bodyclose"] = close
+        order.append("module_bodyclose")
+    # rebuild the body column's widget order (image at the END of the body is a real
+    # case too — e.g. a headshot under the signature — and still must become a native
+    # module: an inline <img> doesn't render wherever it sits); drop any standalone
+    # section that only referenced the (now-relocated) image module.
     for sec in fa["sections"]:
         for col in sec["columns"]:
             if BODY in col["widgets"]:
                 tail = [w for w in col["widgets"] if w == BUTTON]
-                col["widgets"] = [BODY, IMG, "module_bodyclose"] + tail
+                col["widgets"] = order + tail
     fa["sections"] = [s for s in fa["sections"]
                       if not any(IMG in c["widgets"] and BODY not in c["widgets"] for c in s["columns"])]
 
     to_hubspot.hs("PATCH", f"/marketing/v3/emails/{eid}",
                   {"content": {"widgets": widgets, "flexAreas": content["flexAreas"]}})
-    print(f"  {eid}: split OK (part1 {len(part1)}c + image + close {len(part2)}c)")
+    print(f"  {eid}: split OK (part1 {len(part1)}c + image" + (f" + close {len(part2)}c)" if part2 else " at end)"))
     return True
 
 
