@@ -279,7 +279,55 @@ def sync():
         notion._call("PATCH", f"/pages/{pid}",
                      {"properties": {k: v for k, v in base.items() if k in RICH}})
         n_orph += 1
-    print(f"HubSpot rows: {n_new} added, {n_upd} refreshed, {n_orph} orphans kept live")
+    # DISCOVERY: emails that were sent OUTSIDE the machine (no calendar row, so the
+    # walk above never sees them) still belong in reporting — e.g. Tanner cloning a
+    # draft and sending straight from HubSpot. Any email published in the last 14
+    # days with real sends that reporting doesn't know yet gets a row automatically.
+    since = (datetime.date.today() - datetime.timedelta(days=14)).isoformat()
+    n_disc = 0
+    after = None
+    while True:
+        u = "https://api.hubapi.com/marketing/v3/emails?limit=100&includeStats=true" + (f"&after={after}" if after else "")
+        try:
+            req = urllib.request.Request(u, headers={"Authorization": f"Bearer {reporting.HS_TOKEN}"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                d = json.load(resp)
+        except Exception as e:
+            print("  discovery sweep skipped:", e); break
+        for e in d.get("results", []):
+            eid = str(e.get("id"))
+            pd = (e.get("publishDate") or "")[:10]
+            cnt = (e.get("stats", {}).get("counters", {}) or {}).get("sent", 0)
+            if pd < since or cnt <= 0 or eid in by_eid or eid in visited:
+                continue
+            if (e.get("testing") or {}).get("isAbVariation"):
+                continue          # variations ride with their master
+            stats = e.get("stats", {}) or {}
+            bd = reporting.ab_breakdown(e)
+            if bd:
+                stats = bd["a"]
+            base = reporting.stats_to_props(stats)
+            if not base:
+                continue
+            nm = (e.get("name") or "Email")[:80]
+            props = {k: v for k, v in base.items() if k in RICH}
+            props.update({
+                "Name": {"title": [{"type": "text", "text": {"content": ("AUTO — " + nm)[:200]}}]},
+                "Source": {"select": {"name": "HubSpot"}},
+                "Test": {"select": {"name": nm[:90]}},
+                "Variant": {"select": {"name": "A"}},
+                "Subject": {"rich_text": [{"type": "text", "text": {"content": (e.get("subject") or "")[:1900]}}]},
+                "Sent": {"date": {"start": pd}},
+                "HubSpot Link": {"url": f"https://app.hubspot.com/email/{PORTAL}/edit/{eid}/content"},
+            })
+            page = notion._call("POST", "/pages", {"parent": {"database_id": REPORTING_DB}, "properties": props})
+            by_eid[eid] = page["id"]
+            n_disc += 1
+            print(f"  + discovered outside-machine send: {nm[:60]} ({eid})")
+        after = ((d.get("paging", {}) or {}).get("next", {}) or {}).get("after")
+        if not after:
+            break
+    print(f"HubSpot rows: {n_new} added, {n_upd} refreshed, {n_orph} orphans kept live, {n_disc} discovered")
     return hs_decided
 
 
@@ -305,7 +353,12 @@ def normalize_tests():
         stem = max(set(stems), key=lambda s: (stems.count(s), s)) if stems else "Email"
         target = f"{stem} · {aud}".strip(" ·")
         for pid, test in members:
-            if test != target:
+            cur = test.split(" · ")[0] if test else ""
+            # ONLY repair fallback ("Email…") stems — two DIFFERENT real tests can
+            # legitimately share an audience + send day (e.g. a test blast and its
+            # correction followup); renaming a real stem would merge them into a
+            # fake A/B and mis-crown a winner.
+            if (not cur or cur.startswith("Email")) and test != target:
                 notion._call("PATCH", f"/pages/{pid}", {"properties": {"Test": {"select": {"name": target}}}})
                 print(f"  = unified Test → {target}")
 
