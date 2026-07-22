@@ -50,6 +50,10 @@ def personalize(escaped):
     escaped = re.sub(r"(?i)\b(hey|hi|hello)([,!]?\s+)there\b",
                      lambda m: m.group(1) + m.group(2) + FNAME_TOKEN, escaped)
     escaped = re.sub(r"\{\{?\s*first[ _]?name\s*\}?\}", FNAME_TOKEN, escaped, flags=re.I)
+    # double-bracket dotted form ("[[first.name]]") — another Tanner spelling that
+    # shipped literally on the TS Gift admin email (Jul 21); must run before the
+    # single-bracket rule or that one eats the inner pair and strands the outer
+    escaped = re.sub(r"\[\[\s*first[._ ]?name\s*\]\]", FNAME_TOKEN, escaped, flags=re.I)
     escaped = re.sub(r"\[\s*first[ _]?name\s*\]", FNAME_TOKEN, escaped, flags=re.I)
     return escaped
 
