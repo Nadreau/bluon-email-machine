@@ -35,23 +35,31 @@ def split(eid, template_img_mod):
     if BODY not in widgets:
         print(f"  {eid}: no body module — skip"); return False
     html = widgets[BODY]["body"]["html"]
-    m = re.search(r'<img[^>]*src="([^"]+)"[^>]*>', html)
-    if not m:
+    pieces = re.split(r'<img[^>]*src="([^"]+)"[^>]*>', html)
+    if len(pieces) < 3:
         print(f"  {eid}: no inline <img> in body — skip"); return False
-    src = m.group(1)
-    part1 = html[:m.start()].rstrip()
-    part2 = html[m.end():].lstrip()
-
-    widgets[BODY]["body"]["html"] = part1
-    widgets[IMG] = _image_module(src, template_img_mod)
-    order = [BODY, IMG]
-    if part2:      # image mid-body → the rest of the copy continues in a close module
-        close = copy.deepcopy(widgets[BODY]); close["id"] = "module_bodyclose"; close["name"] = "module_bodyclose"
-        close["body"]["html"] = part2
-        close["body"]["hs_wrapper_css"] = {"padding-bottom": "0px", "padding-left": "30px",
-                                           "padding-right": "30px", "padding-top": "0px"}
-        widgets["module_bodyclose"] = close
-        order.append("module_bodyclose")
+    # pieces alternates [text, src, text, src, ..., text] — EVERY inline image
+    # becomes its own native module (a page can carry several body graphics;
+    # splitting only the first left image #2+ invisible, which Tanner hit live).
+    widgets[BODY]["body"]["html"] = pieces[0].rstrip()
+    order = [BODY]
+    n_img = 0
+    for i in range(1, len(pieces), 2):
+        n_img += 1
+        img_id = IMG if n_img == 1 else f"{IMG}{n_img}"
+        mod = _image_module(pieces[i], template_img_mod)
+        mod["id"] = img_id; mod["name"] = img_id
+        widgets[img_id] = mod
+        order.append(img_id)
+        tail = pieces[i + 1].strip()
+        if tail:   # copy continues after this image → its own close module
+            close_id = "module_bodyclose" if n_img == 1 else f"module_bodyclose{n_img}"
+            close = copy.deepcopy(widgets[BODY]); close["id"] = close_id; close["name"] = close_id
+            close["body"]["html"] = tail
+            close["body"]["hs_wrapper_css"] = {"padding-bottom": "0px", "padding-left": "30px",
+                                               "padding-right": "30px", "padding-top": "0px"}
+            widgets[close_id] = close
+            order.append(close_id)
     # rebuild the body column's widget order (image at the END of the body is a real
     # case too — e.g. a headshot under the signature — and still must become a native
     # module: an inline <img> doesn't render wherever it sits); drop any standalone
@@ -66,7 +74,7 @@ def split(eid, template_img_mod):
 
     to_hubspot.hs("PATCH", f"/marketing/v3/emails/{eid}",
                   {"content": {"widgets": widgets, "flexAreas": content["flexAreas"]}})
-    print(f"  {eid}: split OK (part1 {len(part1)}c + image" + (f" + close {len(part2)}c)" if part2 else " at end)"))
+    print(f"  {eid}: split OK ({n_img} image(s) → native, {len(order)} body modules)")
     return True
 
 
