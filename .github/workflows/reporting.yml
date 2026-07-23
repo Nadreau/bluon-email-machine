@@ -17,6 +17,14 @@ on:
 permissions:
   contents: read
 
+# GitHub occasionally double-fires a delayed cron (two "schedule" runs seconds
+# apart, seen Jul 23) — parallel runs then trip Smartlead's rate limit. Queue
+# instead of running concurrently; the refresh is idempotent so a serial dupe
+# is just a few wasted minutes.
+concurrency:
+  group: reporting-refresh
+  cancel-in-progress: false
+
 jobs:
   report:
     runs-on: ubuntu-latest

@@ -39,14 +39,18 @@ MAX_STAT_ROWS = 20000     # per split — A/B pull safety cap (logs if it trunca
 def sl(path):
     sep = "&" if "?" in path else "?"
     req = urllib.request.Request(f"{BASE}{path}{sep}api_key={KEY}", headers={"User-Agent": UA})
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             with urllib.request.urlopen(req, timeout=45) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            # 429 = rate limit; 5xx = Smartlead hiccups on heavy /statistics pages
-            if e.code in (429, 500, 502, 503) and attempt < 3:
-                time.sleep(2 * (attempt + 1)); continue
+            # 429 = rate limit; 5xx = Smartlead hiccups on heavy /statistics pages.
+            # Honor Retry-After when Smartlead sends one; otherwise back off hard —
+            # the short 2/4/6s ladder wasn't enough to outlive a real 429 window.
+            if e.code in (429, 500, 502, 503) and attempt < 5:
+                ra = e.headers.get("Retry-After")
+                wait = int(ra) if (ra or "").isdigit() else 10 * (attempt + 1)
+                time.sleep(min(wait, 120)); continue
             raise
     return None
 
