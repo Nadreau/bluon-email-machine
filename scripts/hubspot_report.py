@@ -234,6 +234,14 @@ def sync():
             if bd["winner"]:
                 hs_decided[test] = bd["winner"]
 
+        # the calendar's Send Date is the PLAN; the send can happen earlier or later
+        # (Tanner published the Jul-29 Field Ops Commercial on Jul 23 and its stats
+        # filed under a future week). Once HubSpot has a real publish date, that
+        # date is the truth the dashboard groups by.
+        actual = (email.get("publishDate") or "")[:10]
+        if actual and (email.get("stats", {}).get("counters", {}) or {}).get("sent", 0) > 0:
+            sent = actual
+
         # A = the linked email (an already-split calendar row keeps its own A/B letter)
         st = _upsert_row(eid, subject, stats, test=test, variant=cal_variant or "A",
                          audience=audience, sent=sent, by_eid=by_eid, by_tv=by_tv, img_url=_img_url(pr))
