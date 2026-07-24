@@ -42,6 +42,24 @@ AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
 }
 
 
+def clear_failure_marks(page_id):
+    """Undo push_failed.py's marks once a push succeeds: remove the red failure
+    callout(s) and reset the '⚠️ Push Failed' status back to 'This Week'."""
+    try:
+        for b in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]:
+            if b["type"] != "callout":
+                continue
+            txt = "".join(x.get("plain_text", "") for x in b["callout"].get("rich_text", []))
+            if txt.startswith("⚠️ Push to HubSpot FAILED"):
+                notion._call("PATCH", f"/blocks/{b['id']}", {"archived": True})
+        pr = notion._call("GET", f"/pages/{page_id}")["properties"]
+        if ((pr.get("Status", {}).get("select") or {}).get("name")) == "⚠️ Push Failed":
+            notion._call("PATCH", f"/pages/{page_id}",
+                         {"properties": {"Status": {"select": {"name": "This Week"}}}})
+    except Exception as e:
+        print("  (failure-mark cleanup skipped:", e, ")")
+
+
 def personalize(escaped):
     """Turn a generic greeting / placeholder in the (already-escaped) copy into the
     HubSpot first-name token. 'Hey there,' -> 'Hey {{ contact.firstname }},'.
@@ -341,6 +359,7 @@ def make_draft(page_id):
     url = f"https://app.hubspot.com/email/{PORTAL}/edit/{eid}/content"
     notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Hubspot Email": {"url": url}}})
     print("HubSpot draft created:", url, "| email id:", eid)
+    clear_failure_marks(page_id)
 
     # any graphic that landed INLINE in the rich-text body will not render in
     # HubSpot's editor (it re-flows/strips complex HTML) — convert it to a native
@@ -546,7 +565,7 @@ def process(page_id):
         # manual check; already drafted + linked, so the re-fired webhook just no-ops.
         for pid in ids:
             try:
-                notion.set_checkbox(pid, "Ready to Go", True)
+                notion.set_ready(pid, True)
             except Exception:
                 pass
 

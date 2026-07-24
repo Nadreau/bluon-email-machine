@@ -134,7 +134,7 @@ def upsert(monday_iso, content):
         "Audience": {"select": {"name": "Admin"}},   # Niko's conditional coloring keys on this
         "Status": {"select": {"name": "This Week"}},
         "Send Date": {"date": {"start": monday_iso}},
-        "Ready to Go": {"checkbox": False},
+        notion.READY_ID: {"checkbox": False},
     }
     body = build_body(monday_iso, content)
     pid = _find_plan(monday_iso)

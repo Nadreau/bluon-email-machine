@@ -90,7 +90,7 @@ def roll_off():
         if not sd:
             continue
         if datetime.date.fromisoformat(sd[:10]) < _today() and _f(p, "Status") not in ("Sent", "Unused"):
-            ready = p.get("Ready to Go", {}).get("checkbox")
+            ready = notion.ready_checked(p)
             new = "Sent" if ready else "Unused"
             notion._call("PATCH", f"/pages/{r['id']}", {"properties": {"Status": {"select": {"name": new}}}})
             s += ready; u += not ready

@@ -44,15 +44,27 @@ jobs:
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           CHROME_BIN: google-chrome
-        run: python scripts/variants.py --prepare
+        run: |
+          set -o pipefail
+          python scripts/variants.py --prepare 2>&1 | tee push.log
       - name: Create HubSpot draft
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
           CHROME_BIN: google-chrome
         run: |
+          set -o pipefail
           if [ -n "$PAGE_ID" ]; then
-            python scripts/to_hubspot.py "$PAGE_ID"
+            python scripts/to_hubspot.py "$PAGE_ID" 2>&1 | tee -a push.log
           else
-            python scripts/to_hubspot.py --ready
+            python scripts/to_hubspot.py --ready 2>&1 | tee -a push.log
           fi
+      # FAIL LOUDLY: every past miss (disabled workflow, renamed trigger column,
+      # image bugs) died where only GitHub could see it. Now the failure lands on
+      # the Notion row itself — red "⚠️ Push Failed" status + error callout — so
+      # whoever checked the box knows immediately. Cleared by the next success.
+      - name: Surface failure on the Notion row
+        if: failure()
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+        run: python scripts/push_failed.py "$PAGE_ID" push.log

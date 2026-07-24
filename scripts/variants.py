@@ -156,7 +156,7 @@ def spawn(base_id):
             "Test Group": {"rich_text": [{"type": "text", "text": {"content": group}}]},
             "Test Stem": {"rich_text": [{"type": "text", "text": {"content": stem[:200]}}]},
             # inherit the base's approval: if the base is Ready, the whole test is approved → siblings send too
-            "Ready to Go": {"checkbox": bool((pr.get("Ready to Go") or {}).get("checkbox"))},
+            notion.READY_ID: {"checkbox": notion.ready_checked(pr)},
         })
         if send_date:
             props["Send Date"] = {"date": {"start": send_date}}
@@ -207,7 +207,7 @@ def prepare():
     idempotent."""
     def q():
         return notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})["results"]
-    rdy = lambda p: bool((p.get("Ready to Go") or {}).get("checkbox"))
+    rdy = notion.ready_checked
     snm = lambda p, k: ((p.get(k, {}) or {}).get("select") or {}).get("name", "")
     grp = lambda p: "".join(x.get("plain_text", "") for x in (p.get("Test Group", {}).get("rich_text") or []))
     # 1) fan un-fanned, Ready subject tests — but NOT one already pushed to HubSpot.
@@ -232,7 +232,7 @@ def prepare():
         if any(rdy(p) for _, p in members if snm(p, "Variant") == "A"):
             for pid, p in members:
                 if not rdy(p):
-                    notion._call("PATCH", f"/pages/{pid}", {"properties": {"Ready to Go": {"checkbox": True}}})
+                    notion.set_ready(pid, True)
                     print(f"  prepare: readied sibling in '{tg}'")
 
 

@@ -75,6 +75,23 @@ def get_guide_text():
     return "\n".join(_blocks_to_text(GUIDE_PAGE_ID))
 
 
+# "Ready to Go" was renamed by Tanner to "Ready to Send to HS" (Jul 23) and the
+# name-based reads silently returned unchecked — breaking every trigger path.
+# Property IDs are stable across renames; ALWAYS address this checkbox by id.
+READY_ID = "WSnW"
+
+
+def ready_checked(props):
+    for v in props.values():
+        if v.get("id") == READY_ID:
+            return bool(v.get("checkbox"))
+    return False
+
+
+def set_ready(page_id, value):
+    _call("PATCH", f"/pages/{page_id}", {"properties": {READY_ID: {"checkbox": bool(value)}}})
+
+
 def _p(props, name):
     p = props.get(name, {}); t = p.get("type")
     if t == "title":
@@ -94,7 +111,7 @@ def get_calendar_rows():
         pr = r.get("properties", {})
         rows.append({"id": r["id"], "name": _p(pr, "Email"), "audience": _p(pr, "Audience"),
                      "engagement": _p(pr, "Engagement"), "channel": _p(pr, "Channel"),
-                     "send_date": _p(pr, "Send Date"), "ready": _p(pr, "Ready to Go"),
+                     "send_date": _p(pr, "Send Date"), "ready": ready_checked(pr),
                      "regen": _p(pr, "Regen requested")})
     return rows
 
