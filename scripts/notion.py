@@ -315,6 +315,7 @@ def parse_draft_page(page_id):
     variant = "a"            # within the email section: a -> b (if variant headings exist)
     has_b = False
     subject, cta = "", "Book a Demo"
+    cta_found = False
     body = {"a": [], "b": []}
     content = {"a": [], "b": []}   # ordered email-body stream (images + paras + bullets)
     hero_url, mockup_old_ids, cta_dest, preview = "", [], "", ""
@@ -351,13 +352,21 @@ def parse_draft_page(page_id):
                 continue
             if clean in ("IMAGE", "[IMAGE]", "(IMAGE)"):
                 continue      # human placeholder marking where a graphic goes — never ship it as text
-            if t == "callout" and ("📅" in txt or "→" in txt):
-                cta = clean.replace("📅", "").replace("→", "").strip() or cta
-                # honor a hyperlink dropped right on the CTA text as its destination
-                if not cta_dest:
-                    href = _first_href(b)
-                    if href and href.startswith(("http://", "https://")):
-                        cta_dest = href
+            if t == "callout":
+                # ANY callout in the email section (brand + hero-hint already
+                # filtered above) is a CTA button — Tanner writes plain "Learn
+                # More" callouts with no 📅/→, which used to be ignored and
+                # ship the default "Book a Demo" button. First callout wins as
+                # THE button; later ones stay out of the body copy (the builder
+                # renders one native button; extras are patched in by hand/agent).
+                if not cta_found:
+                    cta = clean.replace("📅", "").replace("→", "").strip() or cta
+                    cta_found = True
+                    # honor a hyperlink dropped right on the CTA text as its destination
+                    if not cta_dest:
+                        href = _first_href(b)
+                        if href and href.startswith(("http://", "https://")):
+                            cta_dest = href
                 continue
             if t == "bulleted_list_item" and clean:
                 body[variant].append("- " + clean)
@@ -443,7 +452,7 @@ def parse_structure(page_id):
         if section == "email":
             if t == "image":
                 out["hero_anchor_id"] = bid          # pasted hero = insert body after it
-            elif t == "callout" and ("📅" in txt or "→" in txt):
+            elif t == "callout" and not txt.startswith("bluon") and not out.get("cta_id"):
                 out["cta_id"] = bid
             elif t == "paragraph" and txt.startswith("Preview:"):
                 pass
