@@ -279,10 +279,12 @@ def sync():
         notion._call("PATCH", f"/pages/{pid}",
                      {"properties": {k: v for k, v in base.items() if k in RICH}})
         n_orph += 1
-    # DISCOVERY: emails that were sent OUTSIDE the machine (no calendar row, so the
-    # walk above never sees them) still belong in reporting — e.g. Tanner cloning a
-    # draft and sending straight from HubSpot. Any email published in the last 14
-    # days with real sends that reporting doesn't know yet gets a row automatically.
+    # DISCOVERY (log-only): flag published sends the machine doesn't know, but do
+    # NOT auto-create Reporting rows for them. The auto-add version (Jul 21-24)
+    # swept in onboarding-flow drips, distributor reports, and other teams' sends —
+    # Niko's rule: the reporting page is MACHINE emails only. An outside send that
+    # belongs to a machine program gets a Sent calendar row (as the TS Gift
+    # prospecting trio did) and is picked up by the normal walk.
     since = (datetime.date.today() - datetime.timedelta(days=14)).isoformat()
     n_disc = 0
     after = None
@@ -298,36 +300,16 @@ def sync():
             eid = str(e.get("id"))
             pd = (e.get("publishDate") or "")[:10]
             cnt = (e.get("stats", {}).get("counters", {}) or {}).get("sent", 0)
-            if pd < since or cnt <= 0 or eid in by_eid or eid in visited:
-                continue
+            if pd < since or cnt <= 1 or eid in by_eid or eid in visited:
+                continue          # cnt<=1 also skips automated drip/flow test sends
             if (e.get("testing") or {}).get("isAbVariation"):
-                continue          # variations ride with their master
-            stats = e.get("stats", {}) or {}
-            bd = reporting.ab_breakdown(e)
-            if bd:
-                stats = bd["a"]
-            base = reporting.stats_to_props(stats)
-            if not base:
                 continue
-            nm = (e.get("name") or "Email")[:80]
-            props = {k: v for k, v in base.items() if k in RICH}
-            props.update({
-                "Name": {"title": [{"type": "text", "text": {"content": ("AUTO — " + nm)[:200]}}]},
-                "Source": {"select": {"name": "HubSpot"}},
-                "Test": {"select": {"name": nm[:90]}},
-                "Variant": {"select": {"name": "A"}},
-                "Subject": {"rich_text": [{"type": "text", "text": {"content": (e.get("subject") or "")[:1900]}}]},
-                "Sent": {"date": {"start": pd}},
-                "HubSpot Link": {"url": f"https://app.hubspot.com/email/{PORTAL}/edit/{eid}/content"},
-            })
-            page = notion._call("POST", "/pages", {"parent": {"database_id": REPORTING_DB}, "properties": props})
-            by_eid[eid] = page["id"]
             n_disc += 1
-            print(f"  + discovered outside-machine send: {nm[:60]} ({eid})")
+            print(f"  ? outside-machine send (NOT tracked): {(e.get('name') or '')[:60]} ({eid}, {cnt} sent {pd})")
         after = ((d.get("paging", {}) or {}).get("next", {}) or {}).get("after")
         if not after:
             break
-    print(f"HubSpot rows: {n_new} added, {n_upd} refreshed, {n_orph} orphans kept live, {n_disc} discovered")
+    print(f"HubSpot rows: {n_new} added, {n_upd} refreshed, {n_orph} orphans kept live, {n_disc} outside-machine flagged (not tracked)")
     return hs_decided
 
 
