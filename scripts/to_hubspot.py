@@ -31,6 +31,11 @@ FNAME_TOKEN = '{{ contact.firstname }}'
 # to.contactIlsLists via the API, though the config persists in the actual send (confirmed:
 # live A/B emails keep their lists in the UI). So make_draft sets them before A/B conversion.
 SUPPRESSION_LISTS = ["24067", "24459", "24637"]  # Active Suppression Segment · The Suppression Nexus · Imanie's old prospecting
+# Those three are PROSPECTING suppressions: they CONTAIN active customers, admins and
+# partners. Applying them to a customer/partner send silently suppresses the intended
+# audience (caught live on the TS Gift admin email, Kelsey's call Jul 22). Audiences
+# below skip suppressions entirely.
+NO_SUPPRESSION_AUDIENCES = {"Existing Admins", "Admin", "Distributors"}
 AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
     # Residential = all but Commercial Contractors, eng+uneng. The two ServiceTitan
     # lists (24707 eng / 24699 uneng) were REMOVED Jul 1 2026: ServiceTitan now gets
@@ -39,6 +44,11 @@ AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
                      "24706", "24703", "24700", "24704", "24702"],
     "Commercial":   ["24713", "24709", "24705", "24701"],                    # Commercial Contractors, eng+uneng
     "ServiceTitan": ["24707", "24699"],   # ENGAGED (6.2K) + UNENGAGED (5.8K) ServiceTitan Potentials
+    # Distributor contacts for BluonSearch. Kelsey uploads these as monthly CSV lists
+    # ("June 2026 Over 100" / "Under 100"), so refresh these ids when a newer month
+    # exists — pulled from the last BluonSearch Impact Report send (Jul 21 2026).
+    "Distributors": ["24835", "24834"],
+    "Existing Admins": ["24807", "23672"],  # B4B admins + any contacts on active B4B deals (Kelsey-built)
 }
 
 
@@ -352,9 +362,10 @@ def make_draft(page_id):
     # (unmapped segments → no send-to here, set in the UI).
     aud = (pr.get("Audience", {}).get("select") or {}).get("name")
     sendto = AUDIENCE_LISTS.get(aud, [])
+    suppress = [] if aud in NO_SUPPRESSION_AUDIENCES else SUPPRESSION_LISTS
     hs("PATCH", f"/marketing/v3/emails/{eid}",
-       {"to": {"contactIlsLists": {"include": sendto, "exclude": SUPPRESSION_LISTS}}})
-    print(f"  recipients: {len(sendto)} send-to + {len(SUPPRESSION_LISTS)} suppression list(s) (set pre-A/B)")
+       {"to": {"contactIlsLists": {"include": sendto, "exclude": suppress}}})
+    print(f"  recipients: {len(sendto)} send-to + {len(suppress)} suppression list(s) for {aud!r} (set pre-A/B)")
 
     url = f"https://app.hubspot.com/email/{PORTAL}/edit/{eid}/content"
     notion._call("PATCH", f"/pages/{page_id}", {"properties": {"Hubspot Email": {"url": url}}})
