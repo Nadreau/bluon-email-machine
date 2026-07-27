@@ -257,7 +257,7 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
         "Engagement": {"multi_select": [{"name": engagement}] if engagement else []},
         "Channel": sel(channel), "Feature": sel(feature), "Type": sel(type_),
         "Status": sel("This Week"),   # so new rows aren't blank-status
-        "Ready to Go": {"checkbox": False},
+        READY_ID: {"checkbox": False},
     }
     if campaign:     props["Campaign"] = sel(campaign)
     if testing:      props["Testing"] = sel(testing)
