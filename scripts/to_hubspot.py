@@ -35,7 +35,7 @@ SUPPRESSION_LISTS = ["24067", "24459", "24637"]  # Active Suppression Segment ·
 # partners. Applying them to a customer/partner send silently suppresses the intended
 # audience (caught live on the TS Gift admin email, Kelsey's call Jul 22). Audiences
 # below skip suppressions entirely.
-NO_SUPPRESSION_AUDIENCES = {"Existing Admins", "Admin", "Distributors"}
+NO_SUPPRESSION_AUDIENCES = {"Existing Admins", "Admin", "Distributors", "WEX FSM"}
 AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
     # Residential = all but Commercial Contractors, eng+uneng. The two ServiceTitan
     # lists (24707 eng / 24699 uneng) were REMOVED Jul 1 2026: ServiceTitan now gets
@@ -49,6 +49,10 @@ AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
     # exists — pulled from the last BluonSearch Impact Report send (Jul 21 2026).
     "Distributors": ["24835", "24834"],
     "Existing Admins": ["24807", "23672"],  # B4B admins + any contacts on active B4B deals (Kelsey-built)
+    # Contacts whose FSM is WEX/Payzer — built Jul 28 2026 from Tanner's own filter
+    # (B4B Field Service Management is-any-of  OR  Field Management Tools (OB) contains-exactly
+    #  wex / wex fsm / payzer / payzerware / payzer ware). Active/dynamic, ~305.
+    "WEX FSM": ["24898"],
 }
 
 
