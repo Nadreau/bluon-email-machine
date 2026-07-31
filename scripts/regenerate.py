@@ -45,14 +45,23 @@ def _mark_problem(page_id, why):
 def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; no-op (button-triggered now)
     info = notion.parse_draft_page(page_id)
     if not info["subject"]:
+        # Not everyone writes the subject as a Heading 2 — Tanner writes drafts as plain
+        # paragraphs and puts the subject in the row's Subject property instead. Use it
+        # rather than refusing to render: a stale mockup is worse than a headline guess.
+        try:
+            pr = notion._call("GET", f"/pages/{page_id}")["properties"]
+            info["subject"] = "".join(
+                x.get("plain_text", "") for x in (pr.get("Subject", {}).get("rich_text") or [])).strip()
+            if info["subject"]:
+                print("  (subject taken from the row's Subject property)")
+        except Exception:
+            pass
+    if not info["subject"]:
         # Tanner's #1 complaint was "0 way to troubleshoot". A page that can't be parsed
         # used to fail silently in a log only Niko can see. Now it says so on the page.
         _mark_problem(page_id,
-            "This draft can't render yet: it has no subject line. Add a Heading 2 block "
-            "with the subject at the top of the page (above the body), then press "
-            "Regenerate Mockup again. Structure the builder needs: Heading 2 = subject, "
-            "a line starting with \"Preview:\", your body paragraphs, then a callout for "
-            "the button text. Duplicate the \"📐 TEMPLATE\" row to get it pre-built.")
+            "no subject line found. Put the subject in the row's Subject property (or as a "
+            "Heading 2 at the top of the page) and press Regenerate Mockup again.")
         print("skip (no subject):", page_id)
         return False
     _clear_problem(page_id)
