@@ -10,15 +10,52 @@ Modes:
   python regenerate.py --flagged   # all rows with 'Regen requested' checked (webhook path), then clear the flag
   python regenerate.py --fill      # all rows missing a mockup image (initial fill after weekly gen)
 """
-import sys
+import sys, datetime
 import notion, mockup
+
+
+PROBLEM_PREFIX = "⚠️ Mockup can't render"
+
+
+def _clear_problem(page_id):
+    try:
+        for b in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]:
+            if b["type"] != "callout":
+                continue
+            tx = "".join(x.get("plain_text", "") for x in b["callout"].get("rich_text", []))
+            if tx.startswith(PROBLEM_PREFIX):
+                notion._call("PATCH", f"/blocks/{b['id']}", {"archived": True})
+    except Exception:
+        pass
+
+
+def _mark_problem(page_id, why):
+    """Put the reason a render failed ON the row, so the person who pressed the button
+    can fix it themselves instead of messaging Niko."""
+    _clear_problem(page_id)
+    try:
+        notion._call("PATCH", f"/blocks/{page_id}/children", {"children": [
+            {"object": "block", "type": "callout", "callout": {
+                "rich_text": [{"type": "text", "text": {"content": f"{PROBLEM_PREFIX} — {why}"}}],
+                "icon": {"type": "emoji", "emoji": "⚠️"}, "color": "red_background"}}]})
+    except Exception as e:
+        print("  (problem note failed:", e, ")")
 
 
 def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; no-op (button-triggered now)
     info = notion.parse_draft_page(page_id)
     if not info["subject"]:
+        # Tanner's #1 complaint was "0 way to troubleshoot". A page that can't be parsed
+        # used to fail silently in a log only Niko can see. Now it says so on the page.
+        _mark_problem(page_id,
+            "This draft can't render yet: it has no subject line. Add a Heading 2 block "
+            "with the subject at the top of the page (above the body), then press "
+            "Regenerate Mockup again. Structure the builder needs: Heading 2 = subject, "
+            "a line starting with \"Preview:\", your body paragraphs, then a callout for "
+            "the button text. Duplicate the \"📐 TEMPLATE\" row to get it pre-built.")
         print("skip (no subject):", page_id)
         return False
+    _clear_problem(page_id)
     note = ""
     if info["style_notes"]:
         note = "  [styling notes: " + " | ".join(info["style_notes"])[:120] + "]"
@@ -66,14 +103,70 @@ def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; n
     # property is gone). Clearing it 400'd and, because _call raises SystemExit,
     # crashed the whole run AFTER the image had already swapped in → false
     # "mockup failed" alerts. So we simply don't.
+    # Stamp WHEN this render happened, visible right on the row. Tanner had "0 way to
+    # troubleshoot" a button press: now a press that worked moves this timestamp, and one
+    # that didn't leaves it stale — self-service diagnosis, no GitHub access needed.
+    try:
+        notion._call("PATCH", f"/pages/{page_id}",
+                     {"properties": {"Mockup updated": {"date": {"start":
+                        datetime.datetime.now(datetime.timezone.utc).isoformat()}}}})
+    except Exception as e:
+        print("  (mockup timestamp skipped:", e, ")")
     print(("regenerated" if not info["hero_url"] else "regenerated (w/ pasted hero)") +
           ":", page_id, ("· " + str(len(info["style_notes"])) + " styling notes" if info["style_notes"] else ""))
     return True
 
 
+def _newest_mockup_time(page_id):
+    """When the current mockup was rendered (newest image under the Mockup heading)."""
+    newest, in_mock = None, False
+    for b in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]:
+        t = b["type"]
+        txt = "".join(x.get("plain_text", "") for x in (b.get(t, {}).get("rich_text") or []))
+        if t == "heading_3" and notion.MOCKUP_HEADING in txt:
+            in_mock = True
+            continue
+        if in_mock and t == "image":
+            ts = b.get("created_time") or b.get("last_edited_time")
+            if ts and (newest is None or ts > newest):
+                newest = ts
+    return newest
+
+
+def stale_rows(buffer_s=180):
+    """Drafts whose copy changed AFTER the mockup was rendered. This is the safety net
+    that makes the Notion button non-critical: if the button's webhook is dropped (relay
+    down, laptop asleep), the edit is still picked up on the next scheduled sweep.
+    buffer_s keeps a render from re-triggering itself — regenerating edits the page."""
+    out = []
+    res = notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})
+    for r in res.get("results", []):
+        if r.get("archived"):
+            continue
+        pr = r["properties"]
+        name = "".join(x.get("plain_text", "") for x in (pr.get("Email", {}).get("title") or []))
+        edited = r.get("last_edited_time")
+        made = ((pr.get("Mockup updated", {}) or {}).get("date") or {}).get("start")
+        if not made:
+            made = _newest_mockup_time(r["id"])   # first pass only, before the stamp exists
+        if not edited or not made:
+            continue          # never rendered yet -> that's --fill's job, not ours
+        de = datetime.datetime.fromisoformat(edited.replace("Z", "+00:00"))
+        dm = datetime.datetime.fromisoformat(made.replace("Z", "+00:00"))
+        if (de - dm).total_seconds() > buffer_s:
+            out.append((r["id"], name, int((de - dm).total_seconds() // 60)))
+    return out
+
+
 def main():
-    arg = sys.argv[1] if len(sys.argv) > 1 else "--flagged"
-    if arg == "--flagged":
+    arg = sys.argv[1] if len(sys.argv) > 1 else "--stale"
+    if arg == "--stale":
+        rows = stale_rows()
+        print(f"{len(rows)} draft(s) with copy newer than their mockup")
+        for pid, name, mins in rows:
+            print(f"  ↻ {name[:52]} (edited {mins} min after last render)")
+            regen_page(pid)
+    elif arg == "--flagged":
         # The webhook means a box was JUST checked; Notion's query index can lag
         # a few seconds behind that write, so retry a couple times before giving up.
         import time
