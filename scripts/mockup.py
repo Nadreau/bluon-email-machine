@@ -110,10 +110,15 @@ def inner_email_html(headline, flow, cta, *, top_hero_b64=None, top_is_banner=Fa
         f"<a href='{cta_url}' style='display:inline-block;padding:13px 30px;color:#ffffff;"
         f"font-weight:700;font-size:16px;text-decoration:none'>&#128197;&nbsp;{html.escape(cta)}</a>"
         "</td></tr></table>")
+    # No headline block in the draft? Then the email has no headline — render it that way.
+    # The mockup is a picture of the ACTUAL email, so it must never invent a headline from
+    # metadata (e.g. the row's Subject property, which is the inbox subject, not body copy).
+    head = ("<div style='text-align:center;padding:18px 6px 2px'>"
+            f"<div style='font-size:22px;font-weight:800;color:#23496d;line-height:1.2'>"
+            f"{html.escape(headline)}</div></div>") if (headline or "").strip() else ""
     return (
         f"{hero}"
-        "<div style='text-align:center;padding:18px 6px 2px'>"
-        f"<div style='font-size:22px;font-weight:800;color:#23496d;line-height:1.2'>{html.escape(headline)}</div></div>"
+        f"{head}"
         f"<div style='padding:4px 10px'>{body_inner}</div>"
         f"{button}")
 

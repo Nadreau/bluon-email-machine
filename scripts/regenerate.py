@@ -44,26 +44,10 @@ def _mark_problem(page_id, why):
 
 def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; no-op (button-triggered now)
     info = notion.parse_draft_page(page_id)
+    # A draft with no headline block is VALID — plenty of real emails open straight into
+    # the copy. Render it exactly as written rather than skipping or inventing a headline.
     if not info["subject"]:
-        # Not everyone writes the subject as a Heading 2 — Tanner writes drafts as plain
-        # paragraphs and puts the subject in the row's Subject property instead. Use it
-        # rather than refusing to render: a stale mockup is worse than a headline guess.
-        try:
-            pr = notion._call("GET", f"/pages/{page_id}")["properties"]
-            info["subject"] = "".join(
-                x.get("plain_text", "") for x in (pr.get("Subject", {}).get("rich_text") or [])).strip()
-            if info["subject"]:
-                print("  (subject taken from the row's Subject property)")
-        except Exception:
-            pass
-    if not info["subject"]:
-        # Tanner's #1 complaint was "0 way to troubleshoot". A page that can't be parsed
-        # used to fail silently in a log only Niko can see. Now it says so on the page.
-        _mark_problem(page_id,
-            "no subject line found. Put the subject in the row's Subject property (or as a "
-            "Heading 2 at the top of the page) and press Regenerate Mockup again.")
-        print("skip (no subject):", page_id)
-        return False
+        print("  (no headline block — rendering the body as written)")
     _clear_problem(page_id)
     note = ""
     if info["style_notes"]:
@@ -81,6 +65,10 @@ def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; n
         fid = mockup.make_mockup_upload(headline=vi["subject"], flow=vflow,
                                         cta=vi["cta"], top_hero=vhero)
         if not fid:
+            # Tanner's "0 way to troubleshoot": a genuine render failure used to exist only
+            # in a log he can't see. Say it on the row instead.
+            _mark_problem(page_id, "the image renderer failed on this draft. Niko has the "
+                                   "logs — usually a broken/oversized pasted image.")
             print("RENDER FAILED:", page_id, label)
             return False
         if label:
