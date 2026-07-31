@@ -208,7 +208,12 @@ def main():
         pid = arg.strip().replace("-", "")
         if not re.fullmatch(r"[0-9a-fA-F]{32}", pid):
             print("ignoring non-UUID page id:", arg[:40]); return
-        regen_page(arg.strip(), clear_flag=True)
+        # A button press names ONE page. If it can't render, exit non-zero so the Actions
+        # run goes RED instead of reporting success on a total no-op — a green run on a
+        # skipped render is exactly what kept "regenerate is broken" invisible. (--stale
+        # deliberately does NOT do this: one bad draft shouldn't fail a whole sweep.)
+        if not regen_page(arg.strip(), clear_flag=True):
+            sys.exit(1)
 
 
 if __name__ == "__main__":
