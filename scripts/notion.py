@@ -79,6 +79,27 @@ def get_guide_text():
 # name-based reads silently returned unchecked — breaking every trigger path.
 # Property IDs are stable across renames; ALWAYS address this checkbox by id.
 READY_ID = "WSnW"
+FORMAT_ID = "LrRO"      # "Format" select: Email / Text / Push (added Aug 7)
+TEMPLATE_ID = "su[M"    # "Template" checkbox — 📐 rows people duplicate, never send
+
+
+def format_of(props):
+    """The row's Format (Email / Text / Push), by stable id so renames can't break
+    it. Rows predating the property fall back on Channel: Text→Text, else Email."""
+    for v in props.values():
+        if v.get("id") == FORMAT_ID:
+            name = (v.get("select") or {}).get("name")
+            if name:
+                return name
+    ch = ((props.get("Channel", {}) or {}).get("select") or {}).get("name") or ""
+    return "Text" if ch == "Text" else "Email"
+
+
+def is_template(props):
+    for v in props.values():
+        if v.get("id") == TEMPLATE_ID:
+            return bool(v.get("checkbox"))
+    return False
 
 
 def ready_checked(props):
@@ -112,7 +133,8 @@ def get_calendar_rows():
         rows.append({"id": r["id"], "name": _p(pr, "Email"), "audience": _p(pr, "Audience"),
                      "engagement": _p(pr, "Engagement"), "channel": _p(pr, "Channel"),
                      "send_date": _p(pr, "Send Date"), "ready": ready_checked(pr),
-                     "regen": _p(pr, "Regen requested")})
+                     "regen": _p(pr, "Regen requested"),
+                     "format": format_of(pr), "template": is_template(pr)})
     return rows
 
 
@@ -381,6 +403,108 @@ def parse_draft_page(page_id):
         out["body_lines_b"] = body["b"]
         out["content_b"] = content["b"]
     return out
+
+
+def _callout_icon(b):
+    ic = (b.get("callout", {}).get("icon") or {})
+    return ic.get("emoji", "") if ic.get("type") == "emoji" else ""
+
+
+def parse_text_page(page_id):
+    """Pull the message out of a TEXT (Format=Text) draft page. Two shapes are
+    understood:
+      new (📐 TEMPLATE — TEXT): a 'MESSAGE' callout, then paragraph(s) until the
+        next divider — those paragraphs ARE the text.
+      legacy (styled_text_blocks): the message lives inside a gray 📱 callout.
+    Also picks up Audience:/Send: lines and an optional pasted GIF. Returns
+    {"message", "audience_note", "send_note", "gif_url", "mockup_old_ids"}."""
+    blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
+    section, in_msg = "draft", False
+    msg_lines, legacy_msg, gif_url = [], "", ""
+    audience_note = send_note = ""
+    mockup_old_ids = []
+    for b in blocks:
+        t = b["type"]; txt = _block_text(b).strip()
+        if t == "heading_3" and MOCKUP_HEADING in txt:
+            section = "mockup"; continue
+        if section == "mockup":
+            if t in ("image", "callout", "paragraph"):
+                mockup_old_ids.append(b["id"])
+            continue
+        if t == "divider":
+            in_msg = False; continue
+        if t == "callout":
+            up = txt.upper()
+            if up.startswith("MESSAGE"):
+                in_msg = True; continue
+            if (_callout_icon(b) == "📱" and txt and not up.startswith("HOW TO USE")
+                    and not txt.lower().startswith("bluon")):
+                legacy_msg = txt          # old-shape row: the callout IS the text
+            in_msg = False; continue
+        if t == "image":
+            img = b.get("image", {})
+            gif_url = gif_url or (img.get("file") or img.get("external") or {}).get("url", "")
+            continue
+        if t == "paragraph" and txt:
+            low = txt.lower()
+            if low.startswith("audience:"):
+                audience_note = txt[len("audience:"):].strip(); continue
+            if low.startswith("send:"):
+                send_note = txt[len("send:"):].strip(); continue
+            if in_msg:
+                msg_lines.append(txt)
+    return {"message": "\n".join(msg_lines).strip() or legacy_msg,
+            "audience_note": audience_note, "send_note": send_note,
+            "gif_url": gif_url, "mockup_old_ids": mockup_old_ids}
+
+
+def parse_push_page(page_id):
+    """Pull title + body out of a PUSH (Format=Push) draft page (📐 TEMPLATE — PUSH
+    shape): the paragraph after the 'TITLE' callout is the title, the paragraph(s)
+    after the 'BODY' callout are the body, 'Deep link' callout's following paragraph
+    is the optional tap destination. Returns {"title", "body", "deep_link",
+    "audience_note", "send_note", "mockup_old_ids"}."""
+    blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
+    section, mode = "draft", None       # mode: None | "title" | "body" | "link"
+    title, body_lines, deep_link = "", [], ""
+    audience_note = send_note = ""
+    mockup_old_ids = []
+    for b in blocks:
+        t = b["type"]; txt = _block_text(b).strip()
+        if t == "heading_3" and MOCKUP_HEADING in txt:
+            section = "mockup"; continue
+        if section == "mockup":
+            if t in ("image", "callout", "paragraph"):
+                mockup_old_ids.append(b["id"])
+            continue
+        if t == "divider":
+            mode = None; continue
+        if t == "callout":
+            up = txt.upper()
+            if up.startswith("TITLE"):
+                mode = "title"
+            elif up.startswith("BODY"):
+                mode = "body"
+            elif up.startswith("DEEP LINK"):
+                mode = "link"
+            else:
+                mode = None
+            continue
+        if t == "paragraph" and txt:
+            low = txt.lower()
+            if low.startswith("audience:"):
+                audience_note = txt[len("audience:"):].strip(); continue
+            if low.startswith("send:"):
+                send_note = txt[len("send:"):].strip(); continue
+            if mode == "title" and not title:
+                title = txt
+            elif mode == "body":
+                body_lines.append(txt)
+            elif mode == "link" and not deep_link:
+                deep_link = txt
+    return {"title": title, "body": " ".join(body_lines).strip(), "deep_link": deep_link,
+            "audience_note": audience_note, "send_note": send_note,
+            "mockup_old_ids": mockup_old_ids}
 
 
 def variant_b_info(info):

@@ -1,0 +1,43 @@
+name: Comms Machine — Sunday topic ideas
+
+# Sunday-evening idea drop: ~6 topic ideas (2 push / 2 text / 2 email, per the
+# Aug 7 cadence call with Tanner) land in the calendar as 💡 Status=Idea rows
+# for Niko's Monday review. Uses claude -p for fresh angles (CLAUDE_CODE_OAUTH_TOKEN,
+# same auth as the sales coach); falls back to a built-in bank if that fails, so
+# the drop never silently skips. Idempotent — a re-run inside the same weekend no-ops.
+
+on:
+  schedule:
+    - cron: "0 22 * * 0"   # Sunday 6pm ET (EDT)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Drop ideas even if this week's already exist"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sunday-topics
+  cancel-in-progress: false
+
+jobs:
+  ideas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Drop this week's ideas
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -o pipefail
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            python scripts/sunday_topics.py --force
+          else
+            python scripts/sunday_topics.py
+          fi

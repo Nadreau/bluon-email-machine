@@ -513,20 +513,123 @@ def make_ab_body_variation_page(page_id, info=None):
     return vid
 
 
+SEND_KIT_MARK = "🚀 HubSpot build"
+PUSH_WEBHOOK = "https://prod.bluonapi.com/webhook/v1/push-notification-campaigns/send"
+WORKFLOWS_URL = f"https://app.hubspot.com/workflows/6885872/view/all/"
+
+
+def _kit_children(fmt, info, pr):
+    """The paste-ready send kit blocks for a Text or Push row. My HubSpot token
+    can't create workflows, so the machine gets the human to a 2-minute paste:
+    exact copy in a code block + the clone checklist (Kelsey's push protocol,
+    coverage doc Aug 2026)."""
+    def t(content, **ann):
+        o = {"type": "text", "text": {"content": content}}
+        if ann: o["annotations"] = ann
+        return o
+    def todo(txt): return {"object": "block", "type": "to_do", "to_do": {"rich_text": [t(txt)]}}
+    def code(txt): return {"object": "block", "type": "code",
+                           "code": {"rich_text": [t(txt)], "language": "plain text"}}
+    send = ((pr.get("Send Date", {}) or {}).get("date") or {}).get("start") or info.get("send_note") or "(set the date)"
+    aud = info.get("audience_note") or ((pr.get("Audience", {}) or {}).get("select") or {}).get("name") or "(set the audience)"
+    kids = [{"object": "block", "type": "divider", "divider": {}},
+            {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+                t(f"{SEND_KIT_MARK} — {fmt} (paste-ready)")]}}]
+    if fmt == "Push":
+        kids += [
+            code(f"Title: {info['title']}\nBody:  {info['body']}"
+                 + (f"\nDeep link: {info['deep_link']}" if info.get("deep_link") else "")),
+            todo("Workflows → search \"push\" → open a recent push workflow → Actions → Clone (never edit one in place). Name it with today's date."),
+            todo(f"Delay step → set to the send time: {send}"),
+            todo(f"Webhook step (POST {PUSH_WEBHOOK}) → paste Title + Body above into the request body. Auth carries over — don't touch it. Leave user_id = Nova ID and bluon_campaign_key = marketingpush."),
+            todo("Test on YOURSELF first: clone the clone, trigger = Manually triggered only, turn on, enroll yourself, confirm it hits your phone."),
+            todo(f"Set the real enrollment trigger ({aud}), turn the workflow ON."),
+            todo("~30 min after send time: go back in and turn the workflow OFF."),
+            {"object": "block", "type": "callout", "callout": {
+                "rich_text": [t("Full protocol + video: Kelsey's coverage doc (Aug 2026). Customer-specific pushes need Tanner/Taylor sign-off.")],
+                "icon": {"type": "emoji", "emoji": "📓"}, "color": "gray_background"}},
+        ]
+    else:   # Text
+        n = len(info["message"]); segs = 1 if n <= 160 else (n + 152) // 153
+        kids += [
+            code(info["message"]),
+            {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
+                t(f"{n} characters · ~{segs} SMS segment{'s' if segs != 1 else ''}", italic=True, color="gray")]}},
+            todo(f"Techs → Twilio step in a HubSpot workflow (clone the most recent text workflow for this audience: {aud}). Admins → SendBlue instead (iMessage, low daily cap)."),
+            todo("No images — Twilio strips them. Only a tiny GIF (<500KB) ever sends; when in doubt, drop it."),
+            todo(f"Delay/schedule for: {send}. Test on yourself before the real trigger."),
+        ]
+    return kids
+
+
+def _archive_old_kit(page_id):
+    """Remove a previous send-kit section (idempotent re-runs): the marker heading
+    plus everything after it until the next divider/heading."""
+    try:
+        blocks = notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
+    except Exception:
+        return
+    in_kit = False
+    for b in blocks:
+        t = b["type"]
+        txt = "".join(x.get("plain_text", "") for x in (b.get(t, {}).get("rich_text") or []))
+        if t == "heading_3" and SEND_KIT_MARK in txt:
+            in_kit = True
+        elif in_kit and (t in ("heading_1", "heading_2", "heading_3") or t == "divider"):
+            in_kit = False
+        if in_kit:
+            try:
+                notion._call("PATCH", f"/blocks/{b['id']}", {"archived": True})
+            except Exception:
+                pass
+
+
+def make_send_kit(page_id, pr, fmt):
+    """Ready-checked Text/Push row → write the paste-ready build onto the page and
+    link the row to HubSpot Workflows. Raises on missing copy so the run goes red
+    and push_failed puts the reason on the row (same failure path as emails)."""
+    if fmt == "Push":
+        info = notion.parse_push_page(page_id)
+        if not (info["title"] and info["body"]):
+            raise RuntimeError("push row is missing title or body — fill the paragraphs "
+                               "under the TITLE and BODY callouts, then re-check Ready")
+    else:
+        info = notion.parse_text_page(page_id)
+        if not info["message"]:
+            raise RuntimeError("text row has no message — write it under the 💬 MESSAGE "
+                               "callout, then re-check Ready")
+    _archive_old_kit(page_id)
+    notion._call("PATCH", f"/blocks/{page_id}/children", {"children": _kit_children(fmt, info, pr)})
+    # Fill the row's HubSpot link (same property the email path fills) so the --ready
+    # sweep sees it as built and the team has a one-click jump to Workflows.
+    q = "push" if fmt == "Push" else "text"
+    notion._call("PATCH", f"/pages/{page_id}", {"properties": {
+        "Hubspot Email": {"url": f"{WORKFLOWS_URL}?search={q}"}}})
+    clear_failure_marks(page_id)
+    print(f"  {fmt.lower()} send kit written on the row:", page_id)
+
+
 def process(page_id):
     """Approve-once: a test base (subject OR body) expands into its A/B variant row,
     then becomes ONE native HubSpot A/B test (base = version A, the sibling = variation
     B) — not two separate emails. A plain (non-test) row just gets its own draft."""
     import variants
     pr0 = notion._call("GET", f"/pages/{page_id}")["properties"]
-    # HubSpot is only ONE channel of the machine. A Text (SMS) or Anevo row that
-    # gets marked Ready must never be turned into a HubSpot marketing email —
-    # those sends happen in their own tools. (Before this guard, the --ready
-    # sweep drafted a HubSpot email for ANY Ready row, whatever its Channel.)
+    if notion.is_template(pr0):
+        print("  skipping (📐 template row):", page_id)
+        return
     ty0 = ((pr0.get("Type", {}) or {}).get("select") or {}).get("name") or ""
     if ty0 in ("📋 Week Plan", "🔮 Vision"):
         print(f"  skipping (Type={ty0}, a planning row, not a send):", page_id)
         return
+    # Texts and pushes can't be created via the marketing-email API — they ship from
+    # workflows. Ready still means "build it": write the paste-ready kit on the row.
+    fmt0 = notion.format_of(pr0)
+    if fmt0 in ("Text", "Push"):
+        return make_send_kit(page_id, pr0, fmt0)
+    # HubSpot is only ONE channel of the machine. An Anevo row that gets marked
+    # Ready must never be turned into a HubSpot marketing email — those sends
+    # happen in their own tools.
     ch0 = ((pr0.get("Channel", {}) or {}).get("select") or {}).get("name") or ""
     if ch0 and ch0 != "HubSpot":
         print(f"  skipping (Channel={ch0}, not a HubSpot send):", page_id)

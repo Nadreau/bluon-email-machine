@@ -218,6 +218,8 @@ def prepare():
         p = r["properties"]
         if snm(p, "Variant") or not rdy(p) or linked(p):
             continue
+        if notion.format_of(p) != "Email" or notion.is_template(p):
+            continue    # subject A/B fanning is an email-only concept
         if snm(p, "Testing") == "Subject Line" and len(_variants(p)) >= 2:
             print("  prepare: fanning ready subject test", r["id"]); spawn(r["id"])
         # body (Header/Hook) tests don't fan — one page holds both versions and

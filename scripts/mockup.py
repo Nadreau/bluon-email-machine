@@ -180,6 +180,75 @@ def build_html(*, headline, flow, cta, top_hero_b64=None, top_is_banner=False,
 </body></html>"""
 
 
+def build_text_html(message, gif_b64=None):
+    """SMS mockup — an iPhone Messages view of the text as the tech receives it:
+    contact header ('Bluon'), gray incoming bubble(s), optional GIF above the
+    bubble. One paragraph per bubble so multi-paragraph drafts read like the
+    real send."""
+    bubbles = []
+    if gif_b64:
+        bubbles.append(f"<img src='{gif_b64}' style='max-width:230px;border-radius:16px;display:block;margin:0 0 4px'>")
+    for para in [p for p in (message or "").split("\n") if p.strip()]:
+        bubbles.append(
+            "<div style='background:#e9e9eb;color:#111;border-radius:18px;padding:9px 13px;"
+            "max-width:250px;font-size:14.5px;line-height:1.35;margin:0 0 4px;"
+            f"word-wrap:break-word'>{html.escape(para.strip())}</div>")
+    n = len(message or "")
+    segs = 1 if n <= 160 else (n + 152) // 153
+    return f"""<!doctype html><html><head><meta charset='utf-8'></head>
+<body style="margin:0;background:{PAGE_BG};font-family:-apple-system,'Segoe UI',Arial,sans-serif">
+  <div style="width:340px;margin:16px auto;background:#fff;border:1px solid #d9dee5;border-radius:34px;padding:10px 10px 20px;box-shadow:0 6px 24px rgba(35,73,109,.12)">
+    <div style="text-align:center;padding:10px 0 2px;color:#5b6570;font-size:11px">9:41</div>
+    <div style="text-align:center;border-bottom:1px solid #eef0f3;padding-bottom:10px">
+      <div style="width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#2f6df6,#23496d);margin:2px auto 4px;color:#fff;font-weight:800;font-size:20px;line-height:44px;text-align:center">b</div>
+      <div style="font-size:12px;color:#111">Bluon</div>
+    </div>
+    <div style="text-align:center;color:#8a919b;font-size:10.5px;margin:12px 0 8px">Text Message &middot; Today 9:41 AM</div>
+    <div style="padding:0 4px">{''.join(bubbles)}</div>
+    <div style="color:#8a919b;font-size:10.5px;text-align:center;margin-top:14px">{n} characters &middot; ~{segs} SMS segment{'s' if segs != 1 else ''}</div>
+  </div>
+</body></html>"""
+
+
+def build_push_html(title, body):
+    """Push mockup — the notification as it lands on a locked iPhone: dark lock
+    screen, time, one notification card with the Bluon icon, app name, title and
+    body. Over-length title/body renders truncated with an ellipsis, exactly like
+    the phone will, so the draft page shows the cutoff instead of hiding it."""
+    def cut(s, n):
+        s = (s or "").strip()
+        return s if len(s) <= n else s[:n - 1].rstrip() + "…"
+    return f"""<!doctype html><html><head><meta charset='utf-8'></head>
+<body style="margin:0;background:{PAGE_BG};font-family:-apple-system,'Segoe UI',Arial,sans-serif">
+  <div style="width:340px;margin:16px auto;background:linear-gradient(160deg,#1c2b3a,#0e1520 70%);border-radius:34px;padding:26px 12px 46px;box-shadow:0 6px 24px rgba(35,73,109,.25)">
+    <div style="text-align:center;color:#e8edf3;margin:18px 0 4px;font-size:13px">Tuesday, August 11</div>
+    <div style="text-align:center;color:#ffffff;font-size:56px;font-weight:300;letter-spacing:1px;margin-bottom:26px">9:41</div>
+    <div style="background:rgba(245,247,250,.92);border-radius:16px;padding:11px 13px;margin:0 6px">
+      <div style="display:flex;align-items:flex-start">
+        <div style="width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#2f6df6,#23496d);color:#fff;font-weight:800;font-size:17px;line-height:34px;text-align:center;flex:0 0 34px">b</div>
+        <div style="margin-left:9px;min-width:0">
+          <div style="font-size:10.5px;color:#5b6570;letter-spacing:.4px">BLUON &middot; now</div>
+          <div style="font-size:13.5px;font-weight:700;color:#111;line-height:1.25;margin-top:1px">{html.escape(cut(title, 42))}</div>
+          <div style="font-size:13px;color:#333;line-height:1.3;margin-top:1px">{html.escape(cut(body, 130))}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body></html>"""
+
+
+def make_html_mockup_upload(html_str, filename="mockup.png"):
+    """Render arbitrary mockup HTML (text bubble / push card) + upload to Notion.
+    Returns a file_upload id, or None on failure — same contract as
+    make_mockup_upload so regen paths handle both identically."""
+    try:
+        png = render_png(html_str, tempfile.mktemp(suffix=".png"))
+        return upload_png(png, filename)
+    except Exception as e:
+        print("mockup failed:", e)
+        return None
+
+
 def render_png(html_str, out_png):
     with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as f:
         f.write(html_str); html_path = f.name

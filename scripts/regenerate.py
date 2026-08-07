@@ -42,7 +42,111 @@ def _mark_problem(page_id, why):
         print("  (problem note failed:", e, ")")
 
 
+def _stamp_rendered(page_id):
+    try:
+        notion._call("PATCH", f"/pages/{page_id}",
+                     {"properties": {"Mockup updated": {"date": {"start":
+                        datetime.datetime.now(datetime.timezone.utc).isoformat()}}}})
+    except Exception as e:
+        print("  (mockup timestamp skipped:", e, ")")
+
+
+def _swap_mockup(page_id, old_ids, fid, heading_emoji="📧"):
+    """Replace the render under the Mockup heading (append the heading first if the
+    page — e.g. one duplicated from a TEXT/PUSH template — doesn't have one yet)."""
+    has_heading = any(
+        b["type"] == "heading_3" and notion.MOCKUP_HEADING in
+        "".join(x.get("plain_text", "") for x in b["heading_3"].get("rich_text", []))
+        for b in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"])
+    children = []
+    if not has_heading:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+            {"type": "text", "text": {"content": f"{heading_emoji}  {notion.MOCKUP_HEADING} — press 🔄 Regenerate Mockup after edits (gives it ~30–60s to re-render)"}}]}})
+    children.append({"object": "block", "type": "image",
+                     "image": {"type": "file_upload", "file_upload": {"id": fid}}})
+    for bid in old_ids:
+        try:
+            notion._call("PATCH", f"/blocks/{bid}", {"archived": True})
+        except Exception:
+            pass
+    notion._call("PATCH", f"/blocks/{page_id}/children", {"children": children})
+
+
+def regen_text(page_id):
+    """Mockup for a Format=Text row: iPhone Messages view of the draft."""
+    info = notion.parse_text_page(page_id)
+    _clear_problem(page_id)
+    if not info["message"]:
+        _mark_problem(page_id, "no message found — write the text in the paragraph(s) "
+                               "under the 💬 MESSAGE callout.")
+        print("TEXT RENDER SKIPPED (no message):", page_id)
+        return False
+    gif_b64 = mockup.fetch_hero_b64(info["gif_url"]) if info["gif_url"] else None
+    fid = mockup.make_html_mockup_upload(
+        mockup.build_text_html(info["message"], gif_b64=gif_b64), "text-mockup.png")
+    if not fid:
+        _mark_problem(page_id, "the image renderer failed on this text. Niko has the logs.")
+        print("RENDER FAILED (text):", page_id)
+        return False
+    _swap_mockup(page_id, info["mockup_old_ids"], fid, heading_emoji="📱")
+    try:
+        png = mockup.render_png(mockup.build_text_html(info["message"], gif_b64=gif_b64),
+                                __import__("tempfile").mktemp(suffix=".png"))
+        mockup.attach_file_to_property(page_id, "Email Image", png, "text.png")
+    except Exception as e:
+        print("  snapshot property refresh failed:", e)
+    _stamp_rendered(page_id)
+    print("regenerated (text):", page_id)
+    return True
+
+
+def regen_push(page_id):
+    """Mockup for a Format=Push row: lock-screen notification card."""
+    info = notion.parse_push_page(page_id)
+    _clear_problem(page_id)
+    if not (info["title"] or info["body"]):
+        _mark_problem(page_id, "no push copy found — put the title in the paragraph under "
+                               "the 🏷️ TITLE callout and the body under the 💬 BODY callout.")
+        print("PUSH RENDER SKIPPED (no copy):", page_id)
+        return False
+    warn = []
+    if len(info["title"]) > 42:
+        warn.append(f"title is {len(info['title'])} chars (cuts at ~40 on the lock screen)")
+    if len(info["body"]) > 130:
+        warn.append(f"body is {len(info['body'])} chars (cuts at ~120)")
+    fid = mockup.make_html_mockup_upload(
+        mockup.build_push_html(info["title"], info["body"]), "push-mockup.png")
+    if not fid:
+        _mark_problem(page_id, "the image renderer failed on this push. Niko has the logs.")
+        print("RENDER FAILED (push):", page_id)
+        return False
+    _swap_mockup(page_id, info["mockup_old_ids"], fid, heading_emoji="🔔")
+    if warn:
+        # over-length copy: the mockup already shows the ellipsis; say why on the row
+        _mark_problem(page_id, "renders, but " + " and ".join(warn) + ". The mockup below "
+                      "shows the cutoff exactly as phones will.")
+    try:
+        png = mockup.render_png(mockup.build_push_html(info["title"], info["body"]),
+                                __import__("tempfile").mktemp(suffix=".png"))
+        mockup.attach_file_to_property(page_id, "Email Image", png, "push.png")
+    except Exception as e:
+        print("  snapshot property refresh failed:", e)
+    _stamp_rendered(page_id)
+    print("regenerated (push):", page_id)
+    return True
+
+
 def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; no-op (button-triggered now)
+    pr = notion._call("GET", f"/pages/{page_id}")["properties"]
+    if notion.is_template(pr):
+        print("  (📐 template row — never rendered, duplicate it instead)")
+        return True
+    fmt = notion.format_of(pr)
+    if fmt == "Text":
+        return regen_text(page_id)
+    if fmt == "Push":
+        return regen_push(page_id)
     info = notion.parse_draft_page(page_id)
     # A draft with no headline block is VALID — plenty of real emails open straight into
     # the copy. Render it exactly as written rather than skipping or inventing a headline.
@@ -141,6 +245,8 @@ def stale_rows(buffer_s=180):
         if r.get("archived"):
             continue
         pr = r["properties"]
+        if notion.is_template(pr):
+            continue    # 📐 template rows are never rendered
         name = "".join(x.get("plain_text", "") for x in (pr.get("Email", {}).get("title") or []))
         edited = r.get("last_edited_time")
         made = ((pr.get("Mockup updated", {}) or {}).get("date") or {}).get("start")
@@ -181,6 +287,8 @@ def main():
     elif arg == "--fill":
         n = 0
         for r in notion.get_calendar_rows():
+            if r.get("template"):
+                continue
             blocks = notion._call("GET", f"/blocks/{r['id']}/children?page_size=100")["results"]
             if any(b["type"] == "image" for b in blocks):
                 continue   # already has a mockup
@@ -193,6 +301,8 @@ def main():
         # already has one is left to the regen path. Runs daily in the rolling cron.
         n = 0
         for r in notion.get_calendar_rows():
+            if r.get("template"):
+                continue
             pr = notion._call("GET", f"/pages/{r['id']}")["properties"]
             if (pr.get("Email Image", {}) or {}).get("files"):
                 continue
