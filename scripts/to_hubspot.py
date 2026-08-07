@@ -569,12 +569,19 @@ def _archive_old_kit(page_id):
         blocks = notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
     except Exception:
         return
-    in_kit = False
+    in_kit, prev = False, None
     for b in blocks:
         t = b["type"]
         txt = "".join(x.get("plain_text", "") for x in (b.get(t, {}).get("rich_text") or []))
         if t == "heading_3" and SEND_KIT_MARK in txt:
             in_kit = True
+            # the kit's own leading divider sits just above the heading — take it
+            # too, or every rewrite stacks one more divider on the page
+            if prev and prev["type"] == "divider":
+                try:
+                    notion._call("PATCH", f"/blocks/{prev['id']}", {"archived": True})
+                except Exception:
+                    pass
         elif in_kit and (t in ("heading_1", "heading_2", "heading_3") or t == "divider"):
             in_kit = False
         if in_kit:
@@ -582,6 +589,7 @@ def _archive_old_kit(page_id):
                 notion._call("PATCH", f"/blocks/{b['id']}", {"archived": True})
             except Exception:
                 pass
+        prev = b
 
 
 def make_send_kit(page_id, pr, fmt):

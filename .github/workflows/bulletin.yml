@@ -1,0 +1,27 @@
+name: Marketing Machine — Bulletin refresh
+
+# Rebuilds the "Going out (this week)" section of the 📣 Marketing Bulletin page
+# from the calendar every weekday morning — the sales-alignment board from the
+# Aug 7 standup. Human sections (offers, heads-ups) are never touched.
+
+on:
+  schedule:
+    - cron: "0 11 * * 1-5"   # weekdays 7am ET (EDT)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bulletin
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refresh bulletin
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+        run: python scripts/bulletin.py

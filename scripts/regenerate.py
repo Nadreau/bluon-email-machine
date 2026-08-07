@@ -52,25 +52,33 @@ def _stamp_rendered(page_id):
 
 
 def _swap_mockup(page_id, old_ids, fid, heading_emoji="📧"):
-    """Replace the render under the Mockup heading (append the heading first if the
-    page — e.g. one duplicated from a TEXT/PUSH template — doesn't have one yet)."""
-    has_heading = any(
-        b["type"] == "heading_3" and notion.MOCKUP_HEADING in
-        "".join(x.get("plain_text", "") for x in b["heading_3"].get("rich_text", []))
-        for b in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"])
-    children = []
-    if not has_heading:
-        children.append({"object": "block", "type": "divider", "divider": {}})
-        children.append({"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
-            {"type": "text", "text": {"content": f"{heading_emoji}  {notion.MOCKUP_HEADING} — press 🔄 Regenerate Mockup after edits (gives it ~30–60s to re-render)"}}]}})
-    children.append({"object": "block", "type": "image",
-                     "image": {"type": "file_upload", "file_upload": {"id": fid}}})
+    """Replace the render under the Mockup heading. The image is inserted DIRECTLY
+    AFTER the heading (via the `after` param) — a plain append lands at the page
+    bottom, which buried re-renders below the send kit once one existed. If the
+    page (e.g. duplicated from a TEXT/PUSH template) has no heading yet, append
+    heading + image together."""
+    heading_id = None
+    for b in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]:
+        if b["type"] == "heading_3" and notion.MOCKUP_HEADING in \
+                "".join(x.get("plain_text", "") for x in b["heading_3"].get("rich_text", [])):
+            heading_id = b["id"]
+            break
     for bid in old_ids:
         try:
             notion._call("PATCH", f"/blocks/{bid}", {"archived": True})
         except Exception:
             pass
-    notion._call("PATCH", f"/blocks/{page_id}/children", {"children": children})
+    img = {"object": "block", "type": "image",
+           "image": {"type": "file_upload", "file_upload": {"id": fid}}}
+    if heading_id:
+        notion._call("PATCH", f"/blocks/{page_id}/children",
+                     {"children": [img], "after": heading_id})
+    else:
+        notion._call("PATCH", f"/blocks/{page_id}/children", {"children": [
+            {"object": "block", "type": "divider", "divider": {}},
+            {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+                {"type": "text", "text": {"content": f"{heading_emoji}  {notion.MOCKUP_HEADING} — press 🔄 Regenerate Mockup after edits (gives it ~30–60s to re-render)"}}]}},
+            img]})
 
 
 def regen_text(page_id):
