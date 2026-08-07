@@ -180,6 +180,32 @@ def build_html(*, headline, flow, cta, top_hero_b64=None, top_is_banner=False,
 </body></html>"""
 
 
+# The real Bluon app icon (App Store artwork, committed at assets/), embedded as a
+# data URI so CI renders carry it. Falls back to a plain blue lettermark if the
+# asset ever goes missing — a mockup should degrade, not die.
+APP_ICON = os.path.join(os.path.dirname(__file__), "..", "assets", "bluon-app-icon.png")
+
+
+def _app_icon_b64():
+    try:
+        import base64
+        return "data:image/png;base64," + base64.b64encode(open(APP_ICON, "rb").read()).decode()
+    except Exception:
+        return None
+
+
+def _avatar_html(size, radius):
+    """The Bluon app icon at `size` px with `radius` corners (50% = SMS contact
+    circle, ~22% = home/lock-screen app icon)."""
+    b64 = _app_icon_b64()
+    if b64:
+        return (f"<img src='{b64}' style='width:{size}px;height:{size}px;"
+                f"border-radius:{radius};display:block'>")
+    return (f"<div style='width:{size}px;height:{size}px;border-radius:{radius};"
+            "background:linear-gradient(135deg,#2f6df6,#23496d);color:#fff;font-weight:800;"
+            f"font-size:{size//2}px;line-height:{size}px;text-align:center'>b</div>")
+
+
 def build_text_html(message, gif_b64=None):
     """SMS mockup — an iPhone Messages view of the text as the tech receives it:
     contact header ('Bluon'), gray incoming bubble(s), optional GIF above the
@@ -200,7 +226,7 @@ def build_text_html(message, gif_b64=None):
   <div style="width:340px;margin:16px auto;background:#fff;border:1px solid #d9dee5;border-radius:34px;padding:10px 10px 20px;box-shadow:0 6px 24px rgba(35,73,109,.12)">
     <div style="text-align:center;padding:10px 0 2px;color:#5b6570;font-size:11px">9:41</div>
     <div style="text-align:center;border-bottom:1px solid #eef0f3;padding-bottom:10px">
-      <div style="width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#2f6df6,#23496d);margin:2px auto 4px;color:#fff;font-weight:800;font-size:20px;line-height:44px;text-align:center">b</div>
+      <div style="width:44px;margin:2px auto 4px">{_avatar_html(44, "50%")}</div>
       <div style="font-size:12px;color:#111">Bluon</div>
     </div>
     <div style="text-align:center;color:#8a919b;font-size:10.5px;margin:12px 0 8px">Text Message &middot; Today 9:41 AM</div>
@@ -225,7 +251,7 @@ def build_push_html(title, body):
     <div style="text-align:center;color:#ffffff;font-size:56px;font-weight:300;letter-spacing:1px;margin-bottom:26px">9:41</div>
     <div style="background:rgba(245,247,250,.92);border-radius:16px;padding:11px 13px;margin:0 6px">
       <div style="display:flex;align-items:flex-start">
-        <div style="width:34px;height:34px;border-radius:8px;background:linear-gradient(135deg,#2f6df6,#23496d);color:#fff;font-weight:800;font-size:17px;line-height:34px;text-align:center;flex:0 0 34px">b</div>
+        <div style="flex:0 0 34px">{_avatar_html(34, "8px")}</div>
         <div style="margin-left:9px;min-width:0">
           <div style="font-size:10.5px;color:#5b6570;letter-spacing:.4px">BLUON &middot; now</div>
           <div style="font-size:13.5px;font-weight:700;color:#111;line-height:1.25;margin-top:1px">{html.escape(cut(title, 42))}</div>
