@@ -66,13 +66,27 @@ def already_dropped(rows):
     return len(fresh) >= 3
 
 
+def _voice_bank():
+    """VOICE.md (the mined 2022-23 Coda archive) — the generator's style reference.
+    Missing file degrades to empty, never crashes the Sunday drop."""
+    try:
+        p = os.path.join(os.path.dirname(__file__), "..", "VOICE.md")
+        return open(p).read()[:6000]
+    except Exception:
+        return ""
+
+
 def ideas_from_claude(rows):
     recent = "\n".join(f"- [{r['format']}] {r['name']} ({r['status']})"
                        for r in rows if not r["name"].startswith("📐"))
     today = datetime.date.today()
+    voice = _voice_bank()
     prompt = f"""You write weekly retention comms ideas for Bluon, the HVAC app 100K+ technicians use (nameplate scan → {FEATURES}).
 
 AUDIENCE: existing technicians (not prospects). Roughly half are unengaged — they have the app, they forgot it exists. Tone: funny, blue-collar, zero corporate polish. Think memes, dares, one-liners a tech would screenshot. Never condescending, never salesy. Identity/status framing works ("badass operators", "first-time fixes").
+
+HOUSE VOICE (mined from Bluon's best-era sends — match the ENERGY, obey its warning about dead mechanics):
+{voice}
 
 DATE: {today} (consider HVAC seasonality — August = peak cooling chaos, techs are slammed).
 
@@ -80,9 +94,9 @@ RECENT SENDS/DRAFTS (do NOT repeat these angles):
 {recent}
 
 Produce EXACTLY 6 ideas: 2 Push notifications, 2 Texts, 2 Emails. Output ONLY a JSON array, no prose:
-[{{"format": "Push|Text|Email", "title": "short internal name", "engagement": "Engaged|Unengaged|Both", "hook": "2-3 sentences: the actual angle/joke/payoff, concrete enough to draft from"}}]
+[{{"format": "Push|Text|Email", "title": "short internal name", "engagement": "Engaged|Unengaged|Both", "hook": "2-3 sentences: the actual angle/joke/payoff, concrete enough to draft from", "draft": "a first-pass of the actual copy in the house voice — Push: title line + body line; Text: the full message under 300 chars; Email: subject + a 4-6 line body"}}]
 
-HARD RULES: Live Tech Support is a standalone product — never describe it as inside ServiceTitan or any FSM integration. Pushes: the eventual title must fit ~40 chars. Texts: personal, one idea, no images."""
+HARD RULES: Live Tech Support is a PAID standalone product — never call it free, never describe it as inside ServiceTitan or any FSM integration. No 2% cashback / points / contests / BluonPro signups (dead 2022 mechanics). Pushes: title fits ~40 chars, body ~120. Texts: personal, one idea, no images. No em-dashes or semicolons in draft copy."""
     try:
         r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=300)
         m = re.search(r"\[.*\]", r.stdout, re.S)
@@ -124,6 +138,13 @@ def create_idea_row(idea):
         {"object": "block", "type": "paragraph", "paragraph": {
             "rich_text": [{"type": "text", "text": {"content": idea.get("hook", "")}}]}},
     ]
+    if idea.get("draft"):
+        children.append({"object": "block", "type": "callout", "callout": {
+            "rich_text": [{"type": "text", "text": {"content": "First pass (rough copy in the house voice):"}}],
+            "icon": {"type": "emoji", "emoji": "✍️"}, "color": "gray_background"}})
+        for ln in [l for l in idea["draft"].split("\n") if l.strip()][:12]:
+            children.append({"object": "block", "type": "paragraph", "paragraph": {
+                "rich_text": [{"type": "text", "text": {"content": ln.strip()[:1900]}}]}})
     notion._call("POST", "/pages", {"parent": {"database_id": notion.CALENDAR_DB_ID},
                                     "properties": props, "children": children})
     print(f"  💡 [{fmt}] {idea['title']}")
