@@ -24,4 +24,5 @@ jobs:
       - name: Refresh bulletin
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
         run: python scripts/bulletin.py
