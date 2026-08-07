@@ -11,7 +11,7 @@ of the road, heads-ups — is human-maintained and never touched.
 
 Runs weekday mornings via GitHub Actions (bulletin.yml).
 """
-import datetime
+import datetime, re
 import notion
 
 BULLETIN_PAGE_ID = "3b5576a5-c12d-8103-b6f2-fb7bb9dc2173"
@@ -55,37 +55,46 @@ def week_rows():
         camp = ((pr.get("Campaign", {}) or {}).get("select") or {}).get("name") or ""
         out.append({"date": d, "fmt": notion.format_of(pr), "name": name, "subject": subject,
                     "audience": aud, "engagement": eng, "lp": lp, "campaign": camp,
+                    "page_id": r["id"],
                     "sent": d < datetime.date.today() or status == "Sent"})
     return sorted(out, key=lambda r: r["date"])
 
 
 def line_blocks(rows):
+    """One tight table: Day | What | To | The message. Salesperson-glanceable —
+    the message cell links to the calendar row for anyone who wants detail."""
     if not rows:
         return [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
-            _t("Nothing scheduled in the calendar for this window.", italic=True, color="gray")]}}]
-    blocks = []
+            _t("Nothing scheduled this week.", italic=True, color="gray")]}}]
+    def cell(*rich): return list(rich)
+    header = {"object": "block", "type": "table_row", "table_row": {"cells": [
+        cell(_t("Day", bold=True)), cell(_t("What", bold=True)),
+        cell(_t("To", bold=True)), cell(_t("The message", bold=True))]}}
+    trs = [header]
     for r in rows:
-        day = r["date"].strftime("%a %-m/%-d")
-        mark = "✅ " if r["sent"] else ""
-        head = f"{mark}{day} · {ICON.get(r['fmt'], '')} {r['fmt']} · {r['audience']}"
-        if r["engagement"]:
-            head += f" ({r['engagement']})"
-        rich = [_t(head, bold=True)]
-        hook = r["subject"] or r["name"]
-        if hook:
-            rich.append(_t(f' — "{hook}"'))
-        if r["campaign"]:
-            rich.append(_t(f"  [{r['campaign']}]", color="gray"))
-        if r["lp"]:
-            rich.append(_t("  → "))
-            rich.append({"type": "text", "text": {"content": r["lp"].replace("https://www.", "").replace("https://", "")[:60],
-                                                  "link": {"url": r["lp"]}}})
-        blocks.append({"object": "block", "type": "bulleted_list_item",
-                       "bulleted_list_item": {"rich_text": rich}})
-    stamp = datetime.datetime.now().strftime("%b %-d, %-I:%M%p ET")
-    blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
-        _t(f"auto-refreshed {stamp}", italic=True, color="gray")]}})
-    return blocks
+        day = ("✅ " if r["sent"] else "") + r["date"].strftime("%a %-m/%-d")
+        to = r["audience"] + (f" · {r['engagement']}" if r["engagement"] else "")
+        # subject = what recipients actually see. Falling back to the internal row
+        # name, scrub machine-speak — "[Tanner, direct]", "(FIRST PASS)", ✦ marks —
+        # sales reads this table, not the build annotations.
+        hook = r["subject"].strip()
+        if not hook:
+            hook = re.sub(r"\s*[\[(][^\])]*[\])]", "", r["name"])
+            hook = re.sub(r"^[✦🏕📐💡\s]+", "", hook).strip(" —-")
+        url = f"https://www.notion.so/{r['page_id'].replace('-','')}"
+        trs.append({"object": "block", "type": "table_row", "table_row": {"cells": [
+            cell(_t(day)),
+            cell(_t(f"{ICON.get(r['fmt'], '')} {r['fmt']}")),
+            cell(_t(to)),
+            cell({"type": "text", "text": {"content": hook[:80], "link": {"url": url}}})]}})
+    stamp = datetime.datetime.now().strftime("%b %-d")
+    return [
+        {"object": "block", "type": "table", "table": {
+            "table_width": 4, "has_column_header": True, "has_row_header": False,
+            "children": trs}},
+        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
+            _t(f"refreshed {stamp}", italic=True, color="gray")]}},
+    ]
 
 
 def rebuild():
