@@ -412,14 +412,26 @@ def _callout_icon(b):
     return ic.get("emoji", "") if ic.get("type") == "emoji" else ""
 
 
+# Placeholder strings on clean template pages — copy that hasn't been replaced
+# yet parses as EMPTY (so regen says "fill it in" instead of mocking up ghost text).
+PLACEHOLDERS = {
+    "push title goes here (fits ~40 characters)",
+    "push body goes here (fits ~120 characters)",
+    "write the text here. one idea, one link, under 300 characters.",
+}
+
+
+def _is_placeholder(txt):
+    return txt.strip().lower() in PLACEHOLDERS
+
+
 def parse_text_page(page_id):
-    """Pull the message out of a TEXT (Format=Text) draft page. Two shapes are
-    understood:
-      new (📐 TEMPLATE — TEXT): a 'MESSAGE' callout, then paragraph(s) until the
-        next divider — those paragraphs ARE the text.
-      legacy (styled_text_blocks): the message lives inside a gray 📱 callout.
-    Also picks up Audience:/Send: lines and an optional pasted GIF. Returns
-    {"message", "audience_note", "send_note", "gif_url", "mockup_old_ids"}."""
+    """Pull the message out of a TEXT (Format=Text) draft page. Three shapes:
+      clean (Aug 10): a 'Message' heading_3, then paragraph(s) — the page reads
+        like a form; placeholder text parses as empty.
+      callout-era: a 'MESSAGE' callout, then paragraph(s) until a divider.
+      legacy (styled_text_blocks): the message inside a gray 📱 callout.
+    Returns {"message", "audience_note", "send_note", "gif_url", "mockup_old_ids"}."""
     blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
     section, in_msg = "draft", False
     msg_lines, legacy_msg, gif_url = [], "", ""
@@ -429,6 +441,8 @@ def parse_text_page(page_id):
         t = b["type"]; txt = _block_text(b).strip()
         if t == "heading_3" and MOCKUP_HEADING in txt:
             section = "mockup"; continue
+        if t == "heading_3":
+            in_msg = txt.lower().startswith("message"); continue
         if section == "mockup":
             if t in ("image", "callout", "paragraph"):
                 mockup_old_ids.append(b["id"])
@@ -453,7 +467,7 @@ def parse_text_page(page_id):
                 audience_note = txt[len("audience:"):].strip(); continue
             if low.startswith("send:"):
                 send_note = txt[len("send:"):].strip(); continue
-            if in_msg:
+            if in_msg and not _is_placeholder(txt):
                 msg_lines.append(txt)
     return {"message": "\n".join(msg_lines).strip() or legacy_msg,
             "audience_note": audience_note, "send_note": send_note,
@@ -481,7 +495,7 @@ def parse_push_page(page_id):
             continue
         if t == "divider":
             mode = None; continue
-        if t == "callout":
+        if t in ("callout", "heading_3"):
             up = txt.upper()
             if up.startswith("TITLE"):
                 mode = "title"
@@ -492,7 +506,7 @@ def parse_push_page(page_id):
             else:
                 mode = None
             continue
-        if t == "paragraph" and txt:
+        if t == "paragraph" and txt and not _is_placeholder(txt):
             low = txt.lower()
             if low.startswith("audience:"):
                 audience_note = txt[len("audience:"):].strip(); continue
