@@ -637,10 +637,10 @@ def process(page_id):
         return make_send_kit(page_id, pr0, fmt0)
     # HubSpot is only ONE channel of the machine. An Anevo row that gets marked
     # Ready must never be turned into a HubSpot marketing email — those sends
-    # happen in their own tools.
-    ch0 = ((pr0.get("Channel", {}) or {}).get("select") or {}).get("name") or ""
-    if ch0 and ch0 != "HubSpot":
-        print(f"  skipping (Channel={ch0}, not a HubSpot send):", page_id)
+    # happen in their own tools. (Guard reads Source now; Channel was deleted.)
+    src0 = ((pr0.get("Source", {}) or {}).get("select") or {}).get("name") or ""
+    if src0 == "Anevo":
+        print(f"  skipping (Source={src0}, not a HubSpot send):", page_id)
         return
     v0 = ((pr0.get("Variant", {}) or {}).get("select") or {}).get("name")
     if v0 and v0 != "A":

@@ -58,12 +58,16 @@ def recent_rows(limit=30):
     return out
 
 
+def _week_title():
+    """One row per week, dated: '📋 Ideas — Week of Aug 17' (the coming Monday)."""
+    today = datetime.date.today()
+    monday = today + datetime.timedelta(days=(7 - today.weekday()) % 7 or 7)
+    return monday, f"📋 Ideas — Week of {monday.strftime('%b %-d')}"
+
+
 def already_dropped(rows):
-    """This drop already happened? (💡 rows created since yesterday — catches a
-    double-fired cron without letting a manual mid-week run block Sunday's)"""
-    cutoff = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-    fresh = [r for r in rows if r["name"].startswith(IDEA_PREFIX) and r["created"] >= cutoff]
-    return len(fresh) >= 3
+    _, title = _week_title()
+    return any(r["name"] == title for r in rows)
 
 
 def _voice_bank():
@@ -115,39 +119,38 @@ HARD RULES: Live Tech Support is a PAID standalone product — never call it fre
         return picked
 
 
-def create_idea_row(idea):
-    fmt = idea.get("format") if idea.get("format") in ("Email", "Text", "Push") else "Email"
-    eng = idea.get("engagement") or ""
-    tmpl = {"Email": "📐 TEMPLATE — EMAIL", "Text": "📐 TEMPLATE — TEXT", "Push": "📐 TEMPLATE — PUSH"}[fmt]
-    props = {
-        "Email": {"title": [{"type": "text", "text": {"content": (IDEA_PREFIX + idea["title"])[:200]}}]},
-        "Status": {"select": {"name": "Idea"}},
-        "Format": {"select": {"name": fmt}},
-        "Hook": {"rich_text": [{"type": "text", "text": {"content": idea.get("hook", "")[:1900]}}]},
-        notion.READY_ID: {"checkbox": False},
-    }
-    if eng in ("Engaged", "Unengaged"):
-        props["Engagement"] = {"multi_select": [{"name": eng}]}
-    elif eng == "Both":
-        props["Engagement"] = {"multi_select": [{"name": "Engaged"}, {"name": "Unengaged"}]}
-    children = [
-        {"object": "block", "type": "callout", "callout": {
-            "rich_text": [{"type": "text", "text": {"content":
-                f"IDEA ({fmt}) — keep it? Draft the copy on this page ({tmpl} shows the shape) or ask Claude to draft it. Not this week's vibe? Archive the row."}}],
-            "icon": {"type": "emoji", "emoji": "💡"}, "color": "yellow_background"}},
-        {"object": "block", "type": "paragraph", "paragraph": {
-            "rich_text": [{"type": "text", "text": {"content": idea.get("hook", "")}}]}},
-    ]
-    if idea.get("draft"):
-        children.append({"object": "block", "type": "callout", "callout": {
-            "rich_text": [{"type": "text", "text": {"content": "First pass (rough copy in the house voice):"}}],
-            "icon": {"type": "emoji", "emoji": "✍️"}, "color": "gray_background"}})
-        for ln in [l for l in idea["draft"].split("\n") if l.strip()][:12]:
+def create_week_row(ideas):
+    """ONE dated row for the whole weekly drop (Niko, Aug 10: never create rows
+    without a Send Date, and one weekly item — not six loose rows). The ideas
+    live INSIDE the page; approved ones get their own dated row when drafted."""
+    monday, title = _week_title()
+    def t(c, **a):
+        o = {"type": "text", "text": {"content": c}}
+        if a: o["annotations"] = a
+        return o
+    children = [{"object": "block", "type": "callout", "callout": {
+        "rich_text": [t("This week's topic ideas. Keep the good ones (draft from a 📐 TEMPLATE row or ask Claude), ignore the rest. This page never sends anything.")],
+        "icon": {"type": "emoji", "emoji": "💡"}, "color": "yellow_background"}}]
+    for idea in ideas:
+        fmt = idea.get("format") if idea.get("format") in ("Email", "Text", "Push") else "Email"
+        eng = idea.get("engagement") or ""
+        children.append({"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+            t(f"{IDEA_PREFIX}{idea['title']}  ·  {fmt}" + (f" · {eng}" if eng else ""), bold=True)]}})
+        if idea.get("hook"):
             children.append({"object": "block", "type": "paragraph", "paragraph": {
-                "rich_text": [{"type": "text", "text": {"content": ln.strip()[:1900]}}]}})
+                "rich_text": [t(idea["hook"][:1900])]}})
+        for ln in [l for l in (idea.get("draft") or "").split("\n") if l.strip()][:10]:
+            children.append({"object": "block", "type": "quote", "quote": {
+                "rich_text": [t(ln.strip()[:1900])]}})
     notion._call("POST", "/pages", {"parent": {"database_id": notion.CALENDAR_DB_ID},
-                                    "properties": props, "children": children})
-    print(f"  💡 [{fmt}] {idea['title']}")
+        "properties": {
+            "Email": {"title": [{"type": "text", "text": {"content": title}}]},
+            "Type": {"select": {"name": "📋 Week Plan"}},
+            "Status": {"select": {"name": "Idea"}},
+            "Send Date": {"date": {"start": monday.isoformat()}},
+            notion.READY_ID: {"checkbox": False}},
+        "children": children})
+    print(f"created {title} with {len(ideas)} ideas inside")
 
 
 def main():
@@ -156,12 +159,7 @@ def main():
         print("this week's idea drop already exists — nothing to do")
         return
     ideas = ideas_from_claude(rows)
-    print(f"dropping {len(ideas)} ideas into the calendar")
-    for idea in ideas:
-        try:
-            create_idea_row(idea)
-        except Exception as e:
-            print("  row failed:", e)
+    create_week_row(ideas)
 
 
 if __name__ == "__main__":

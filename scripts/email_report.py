@@ -97,7 +97,8 @@ def run():
         props.update({
             "Email": {"title": [{"type": "text", "text": {"content": (e.get("name") or "")[:200]}}]},
             "Test Group": {"rich_text": [{"type": "text", "text": {"content": (tg or "")[:200]}}]},
-            "Channel": {"select": {"name": "HubSpot"}},
+            "Source": {"select": {"name": "HubSpot"}},
+            "Format": {"select": {"name": "Email"}},
             "Status": {"select": {"name": "Sent"}},
             "Subject": {"rich_text": [{"type": "text", "text": {"content": (e.get("subject") or "")[:200]}}]},
             "Hubspot Email": {"url": f"https://app.hubspot.com/email/6885872/edit/{eid}/content"},

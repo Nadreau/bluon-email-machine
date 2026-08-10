@@ -38,7 +38,7 @@ def main():
         name = "".join(x.get("plain_text", "") for x in pr.get("Email", {}).get("title", []))
         aud = (pr.get("Audience", {}).get("select") or {}).get("name", "")
         eng = (pr.get("Engagement", {}).get("select") or {}).get("name", "")
-        chan = (pr.get("Channel", {}).get("select") or {}).get("name", "")
+        chan = notion.format_of(pr)
         date = (pr.get("Send Date", {}).get("date") or {}).get("start", "")
         url = r.get("url", "")
         msg = (f":white_check_mark: *Email approved — ready to send*\n"

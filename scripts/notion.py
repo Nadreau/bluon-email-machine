@@ -277,14 +277,16 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
         "Audience": sel(audience),
         # Engagement is a multi_select in the calendar (a row can target both)
         "Engagement": {"multi_select": [{"name": engagement}] if engagement else []},
-        "Channel": sel(channel), "Feature": sel(feature), "Type": sel(type_),
+        # Channel/Feature/Vibe were deleted from the DB (Aug 10 cleanup) — Format
+        # replaces Channel; feature/vibe params are still accepted but ignored.
+        "Format": {"select": {"name": "Text" if channel == "Text" else "Email"}},
+        "Type": sel(type_),
         "Status": sel("This Week"),   # so new rows aren't blank-status
         READY_ID: {"checkbox": False},
     }
     if campaign:     props["Campaign"] = sel(campaign)
     if testing:      props["Testing"] = sel(testing)
     if variant:      props["Variant"] = sel(variant)
-    if vibe:         props["Vibe"] = sel(vibe)
     if test_group:   props["Test Group"] = {"rich_text": [{"type": "text", "text": {"content": test_group[:200]}}]}
     if landing_page: props["Landing Page"] = {"url": landing_page}
     if subject_variants: props["Subject Variants"] = {"rich_text": [{"type": "text", "text": {"content": label_variants(subject_variants)[:1900]}}]}

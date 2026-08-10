@@ -150,6 +150,10 @@ def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; n
     if notion.is_template(pr):
         print("  (📐 template row — never rendered, duplicate it instead)")
         return True
+    ty = ((pr.get("Type", {}) or {}).get("select") or {}).get("name") or ""
+    if ty in ("📋 Week Plan", "🔮 Vision"):
+        print(f"  ({ty} — planning page, nothing to render)")
+        return True
     fmt = notion.format_of(pr)
     if fmt == "Text":
         return regen_text(page_id)

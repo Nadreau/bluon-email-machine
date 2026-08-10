@@ -18,8 +18,8 @@ relies on that to pair the native HubSpot A/B, so never skip-without-returning.
 import sys, re
 import notion, mockup
 
-CARRY = ["Audience", "Engagement", "Channel", "Feature", "Type", "Campaign",
-         "Status", "Vibe", "Landing Page"]
+CARRY = ["Audience", "Engagement", "Format", "Type", "Campaign",
+         "Status", "Landing Page"]
 
 
 def _common_prefix(strs):
