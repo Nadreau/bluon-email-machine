@@ -30,16 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Refresh reporting stats
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_BLUON_TOKEN }}
-          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
-        run: |
-          if [ -n "${{ github.event.inputs.page_id }}" ]; then
-            python scripts/reporting.py "${{ github.event.inputs.page_id }}"
-          else
-            python scripts/reporting.py
-          fi
+      # reporting.py is RETIRED (Aug 10): it mirrored send stats + Winner onto
+      # CALENDAR rows, but reporting fully lives in the 📊 Email Reporting DB now
+      # (the steps below). The calendar is a planning surface — its stats columns
+      # were deleted. Re-adding them + this step restores the mirror if ever wanted.
       # email_report.py is DISABLED: it mirrored HubSpot A/B pairs into the calendar as
       # separate A/B rows, which re-splits our one-row-per-test calendar. hubspot_report.py
       # now pulls the A/B variation straight from HubSpot into the Reporting DB instead, so

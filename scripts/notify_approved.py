@@ -37,7 +37,7 @@ def main():
             continue
         name = "".join(x.get("plain_text", "") for x in pr.get("Email", {}).get("title", []))
         aud = (pr.get("Audience", {}).get("select") or {}).get("name", "")
-        eng = (pr.get("Engagement", {}).get("select") or {}).get("name", "")
+        eng = ""
         chan = notion.format_of(pr)
         date = (pr.get("Send Date", {}).get("date") or {}).get("start", "")
         url = r.get("url", "")

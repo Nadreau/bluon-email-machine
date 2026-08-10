@@ -18,7 +18,7 @@ relies on that to pair the native HubSpot A/B, so never skip-without-returning.
 import sys, re
 import notion, mockup
 
-CARRY = ["Audience", "Engagement", "Format", "Type", "Campaign",
+CARRY = ["Audience", "Format", "Type", "Campaign",
          "Status", "Landing Page"]
 
 

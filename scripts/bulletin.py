@@ -49,8 +49,8 @@ def week_rows():
             continue
         name = "".join(x.get("plain_text", "") for x in (pr.get("Email", {}).get("title") or []))
         subject = "".join(x.get("plain_text", "") for x in (pr.get("Subject", {}).get("rich_text") or []))
-        aud = ((pr.get("Audience", {}) or {}).get("select") or {}).get("name") or ""
-        eng = ", ".join(o["name"] for o in (pr.get("Engagement", {}) or {}).get("multi_select") or [])
+        aud = ", ".join(o["name"] for o in (pr.get("Audience", {}) or {}).get("multi_select") or [])
+        eng = ""
         lp = (pr.get("Landing Page", {}) or {}).get("url") or ""
         camp = ((pr.get("Campaign", {}) or {}).get("select") or {}).get("name") or ""
         out.append({"date": d, "fmt": notion.format_of(pr), "name": name, "subject": subject,

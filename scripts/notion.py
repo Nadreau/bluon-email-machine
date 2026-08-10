@@ -131,7 +131,7 @@ def get_calendar_rows():
     for r in _call("POST", f"/databases/{CALENDAR_DB_ID}/query", {"page_size": 100}).get("results", []):
         pr = r.get("properties", {})
         rows.append({"id": r["id"], "name": _p(pr, "Email"), "audience": _p(pr, "Audience"),
-                     "engagement": _p(pr, "Engagement"), "channel": _p(pr, "Channel"),
+                     "engagement": "", "channel": _p(pr, "Channel"),
                      "send_date": _p(pr, "Send Date"), "ready": ready_checked(pr),
                      "regen": _p(pr, "Regen requested"),
                      "format": format_of(pr), "template": is_template(pr)})
@@ -274,9 +274,9 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
     props = {
         "Email": {"title": [{"type": "text", "text": {"content": title[:200]}}]},
         "Subject": {"rich_text": [{"type": "text", "text": {"content": (subject or "")[:200]}}]},
-        "Audience": sel(audience),
-        # Engagement is a multi_select in the calendar (a row can target both)
-        "Engagement": {"multi_select": [{"name": engagement}] if engagement else []},
+        # Audience became a multi_select (Aug 10); Engagement was deleted — the
+        # engagement param is accepted but ignored (fold it into audience labels).
+        "Audience": {"multi_select": [{"name": audience}] if audience else []},
         # Channel/Feature/Vibe were deleted from the DB (Aug 10 cleanup) — Format
         # replaces Channel; feature/vibe params are still accepted but ignored.
         "Format": {"select": {"name": "Text" if channel == "Text" else "Email"}},

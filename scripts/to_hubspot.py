@@ -172,7 +172,7 @@ def utm_link(base, pr):
     slug = lambda s: (s or "").lower().replace(" ", "-").replace("/", "-") or None
     camp = slug((pr.get("Campaign", {}).get("select") or {}).get("name")) or "email-machine"
     aud = slug((pr.get("Audience", {}).get("select") or {}).get("name")) or "all"
-    eng = slug((pr.get("Engagement", {}).get("select") or {}).get("name")) or "all"
+    eng = "all"   # Engagement property deleted Aug 10 — audience carries targeting now
     q = {"utm_source": "bluon-email", "utm_medium": "email",
          "utm_campaign": camp, "utm_content": f"{aud}-{eng}"}
     sep = "&" if "?" in base else "?"

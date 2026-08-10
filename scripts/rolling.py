@@ -121,7 +121,7 @@ def upcoming_gaps():
             continue
         aud = _f(p, "Audience")
         if aud:
-            have.add((_week_monday(sd), aud, _f(p, "Engagement")))
+            have.add((_week_monday(sd), aud, ""))
     gaps = []
     for i in range(1, WINDOW + 1):                          # future days only (skip today)
         d = _today() + datetime.timedelta(days=i)
