@@ -36,6 +36,14 @@ SUPPRESSION_LISTS = ["24067", "24459", "24637"]  # Active Suppression Segment ·
 # audience (caught live on the TS Gift admin email, Kelsey's call Jul 22). Audiences
 # below skip suppressions entirely.
 NO_SUPPRESSION_AUDIENCES = {"Existing Admins", "Admin", "Distributors", "WEX FSM"}
+def _aud_name(pr):
+    """First Audience value — the property became a multi_select (Aug 10)."""
+    ms = (pr.get("Audience", {}) or {}).get("multi_select")
+    if ms:
+        return ms[0].get("name")
+    return ((pr.get("Audience", {}) or {}).get("select") or {}).get("name")
+
+
 AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
     # Residential = all but Commercial Contractors, eng+uneng. The two ServiceTitan
     # lists (24707 eng / 24699 uneng) were REMOVED Jul 1 2026: ServiceTitan now gets
@@ -139,7 +147,7 @@ def resolve_landing_page(pr):
     if existing:
         return existing
     camp = (pr.get("Campaign", {}).get("select") or {}).get("name")
-    aud = (pr.get("Audience", {}).get("select") or {}).get("name")
+    aud = _aud_name(pr)
     entry = LANDING_PAGES.get(camp)
     if isinstance(entry, dict):
         url = entry.get(aud) or entry.get("_default") or DEFAULT_LP
@@ -171,7 +179,7 @@ def utm_link(base, pr):
     import urllib.parse
     slug = lambda s: (s or "").lower().replace(" ", "-").replace("/", "-") or None
     camp = slug((pr.get("Campaign", {}).get("select") or {}).get("name")) or "email-machine"
-    aud = slug((pr.get("Audience", {}).get("select") or {}).get("name")) or "all"
+    aud = slug(_aud_name(pr)) or "all"
     eng = "all"   # Engagement property deleted Aug 10 — audience carries targeting now
     q = {"utm_source": "bluon-email", "utm_medium": "email",
          "utm_campaign": camp, "utm_content": f"{aud}-{eng}"}
@@ -364,7 +372,7 @@ def make_draft(page_id):
     # converts it to an A/B test the API can no longer write these, but they persist in the
     # send. Suppressions are always applied; audience comes from the per-segment mapping
     # (unmapped segments → no send-to here, set in the UI).
-    aud = (pr.get("Audience", {}).get("select") or {}).get("name")
+    aud = _aud_name(pr)
     sendto = AUDIENCE_LISTS.get(aud, [])
     suppress = [] if aud in NO_SUPPRESSION_AUDIENCES else SUPPRESSION_LISTS
     hs("PATCH", f"/marketing/v3/emails/{eid}",
