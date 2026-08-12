@@ -236,11 +236,15 @@ def build_text_html(message, gif_b64=None):
     bubbles = []
     if gif_b64:
         bubbles.append(f"<img src='{gif_b64}' style='max-width:230px;border-radius:16px;display:block;margin:0 0 4px'>")
-    for para in [p for p in (message or "").split("\n") if p.strip()]:
+    # ONE bubble. A text is one message — line breaks are line breaks INSIDE it, not
+    # separate sends. (A sign-off on its own line was rendering as a second text with
+    # nothing saying that was intended — Niko, Aug 12. Two texts = two rows.)
+    lines = [html.escape(p.strip()) for p in (message or "").split("\n") if p.strip()]
+    if lines:
         bubbles.append(
             "<div style='background:#e9e9eb;color:#111;border-radius:18px;padding:9px 13px;"
             "max-width:250px;font-size:14.5px;line-height:1.35;margin:0 0 4px;"
-            f"word-wrap:break-word'>{html.escape(para.strip())}</div>")
+            f"word-wrap:break-word'>{'<br>'.join(lines)}</div>")
     n = len(message or "")
     segs = 1 if n <= 160 else (n + 152) // 153
     return f"""<!doctype html><html><head><meta charset='utf-8'></head>

@@ -681,37 +681,43 @@ def _archive_old_kit(page_id):
 
 
 def make_send_kit(page_id, pr, fmt):
-    """Ready-checked Text/Push row → write the paste-ready build onto the page and
-    link the row to HubSpot Workflows. Raises on missing copy so the run goes red
-    and push_failed puts the reason on the row (same failure path as emails)."""
+    """Ready-to-Build on a Text/Push row. There is no HubSpot object to create — a
+    text or push is built by cloning a workflow — so the DRAFT PAGE is the whole
+    deliverable: the copy at the top and the mockup under it. This used to append a
+    "paste-ready" kit section; Niko cut it (Aug 12) because the page already says
+    everything and the kit was noise. So this now only: validates the copy exists,
+    strips any old kit section, and stamps the row so the check is visibly acted on.
+
+    Raises on missing copy so the run goes red and push_failed marks the row.
+    """
     if fmt == "Push":
         info = notion.parse_push_page(page_id)
         if not (info["title"] and info["body"]):
             raise RuntimeError("push row is missing title or body — fill the paragraphs "
-                               "under the TITLE and BODY callouts, then re-check Ready")
+                               "under the Title and Body headings, then re-check Ready")
+        detail = f"title {len(info['title'])} chars, body {len(info['body'])} chars"
     else:
         info = notion.parse_text_page(page_id)
         if not info["message"]:
-            raise RuntimeError("text row has no message — write it under the 💬 MESSAGE "
-                               "callout, then re-check Ready")
-    _archive_old_kit(page_id)
-    notion._call("PATCH", f"/blocks/{page_id}/children", {"children": _kit_children(fmt, info, pr)})
-    # NO "Hubspot Email" link for texts/pushes. It used to get a Workflows *search*
-    # url purely as a built-marker, which opened a page with nothing on it (Tanner +
-    # Niko, Aug 12: "it's a nothing page"). There is no draft object to link to — a
-    # push/text is built by cloning a workflow — so the send kit ON THIS PAGE is the
-    # deliverable. Idempotency now comes from the kit heading, not a fake url.
-    # VISIBLE confirmation on the row. Building a text/push produces no HubSpot draft
-    # and no link, so without this the row looks completely unchanged after checking
-    # Ready — Niko checked the box, saw nothing move, and reasonably assumed the
-    # automation was broken (Aug 12). Status is the one thing visible in the table view.
+            raise RuntimeError("text row has no message — write it under the Message "
+                               "heading, then re-check Ready")
+        n = len(info["message"])
+        detail = f"{n} chars, ~{1 if n <= 160 else (n + 152) // 153} SMS segment(s)"
+    _archive_old_kit(page_id)          # clear kits written by the old behaviour
+    try:                                # keep the picture current with the copy
+        import regenerate
+        regenerate.regen_page(page_id)
+    except Exception as e:
+        print("  mockup refresh skipped:", str(e)[:80])
     try:
         notion._call("PATCH", f"/pages/{page_id}",
                      {"properties": {"Status": {"select": {"name": "✅ Built"}}}})
     except Exception as e:
         print("  (status stamp skipped:", e, ")")
     clear_failure_marks(page_id)
-    print(f"  {fmt.lower()} send kit written on the row:", page_id)
+    if info.get("notes"):
+        print(f"  notes on the row (not sent): {' | '.join(info['notes'])[:120]}")
+    print(f"  {fmt.lower()} approved — {detail}:", page_id)
 
 
 def has_send_kit(page_id):

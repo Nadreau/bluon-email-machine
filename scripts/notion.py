@@ -439,6 +439,20 @@ def _is_placeholder(txt):
     return txt.strip().lower() in PLACEHOLDERS
 
 
+# (( ... )) is the house convention for a note to the team ON the draft — it is NOT
+# part of the message. Stripped from anything that renders or sends; a line that is
+# ONLY a note disappears entirely.
+NOTE_RE = re.compile(r"\(\(.*?\)\)", re.S)
+
+
+def strip_notes(text):
+    return re.sub(r"[ \t]{2,}", " ", NOTE_RE.sub("", text or "")).strip()
+
+
+def collect_notes(text):
+    return [m.strip("() ").strip() for m in NOTE_RE.findall(text or "")]
+
+
 def parse_text_page(page_id):
     """Pull the message out of a TEXT (Format=Text) draft page. Three shapes:
       clean (Aug 10): a 'Message' heading_3, then paragraph(s) — the page reads
@@ -448,7 +462,7 @@ def parse_text_page(page_id):
     Returns {"message", "audience_note", "send_note", "gif_url", "mockup_old_ids"}."""
     blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
     section, in_msg = "draft", False
-    msg_lines, legacy_msg, gif_url = [], "", ""
+    msg_lines, legacy_msg, gif_url, notes = [], "", "", []
     audience_note = send_note = ""
     mockup_old_ids = []
     for b in blocks:
@@ -482,9 +496,12 @@ def parse_text_page(page_id):
             if low.startswith("send:"):
                 send_note = txt[len("send:"):].strip(); continue
             if in_msg and not _is_placeholder(txt):
-                msg_lines.append(txt)
-    return {"message": "\n".join(msg_lines).strip() or legacy_msg,
-            "audience_note": audience_note, "send_note": send_note,
+                notes.extend(collect_notes(txt))
+                clean = strip_notes(txt)
+                if clean:
+                    msg_lines.append(clean)
+    return {"message": "\n".join(msg_lines).strip() or strip_notes(legacy_msg),
+            "audience_note": audience_note, "send_note": send_note, "notes": notes,
             "gif_url": gif_url, "mockup_old_ids": mockup_old_ids}
 
 
@@ -496,7 +513,7 @@ def parse_push_page(page_id):
     "audience_note", "send_note", "mockup_old_ids"}."""
     blocks = _call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]
     section, mode = "draft", None       # mode: None | "title" | "body" | "link"
-    title, body_lines, deep_link = "", [], ""
+    title, body_lines, deep_link, notes = "", [], "", []
     audience_note = send_note = ""
     mockup_old_ids = []
     for b in blocks:
@@ -526,14 +543,18 @@ def parse_push_page(page_id):
                 audience_note = txt[len("audience:"):].strip(); continue
             if low.startswith("send:"):
                 send_note = txt[len("send:"):].strip(); continue
+            notes.extend(collect_notes(txt))
+            clean = strip_notes(txt)
+            if not clean:
+                continue
             if mode == "title" and not title:
-                title = txt
+                title = clean
             elif mode == "body":
-                body_lines.append(txt)
+                body_lines.append(clean)
             elif mode == "link" and not deep_link:
-                deep_link = txt
+                deep_link = clean
     return {"title": title, "body": " ".join(body_lines).strip(), "deep_link": deep_link,
-            "audience_note": audience_note, "send_note": send_note,
+            "audience_note": audience_note, "send_note": send_note, "notes": notes,
             "mockup_old_ids": mockup_old_ids}
 
 
