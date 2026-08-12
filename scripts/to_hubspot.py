@@ -696,13 +696,26 @@ def make_send_kit(page_id, pr, fmt):
                                "callout, then re-check Ready")
     _archive_old_kit(page_id)
     notion._call("PATCH", f"/blocks/{page_id}/children", {"children": _kit_children(fmt, info, pr)})
-    # Fill the row's HubSpot link (same property the email path fills) so the --ready
-    # sweep sees it as built and the team has a one-click jump to Workflows.
-    q = "push" if fmt == "Push" else "text"
-    notion._call("PATCH", f"/pages/{page_id}", {"properties": {
-        "Hubspot Email": {"url": f"{WORKFLOWS_URL}?search={q}"}}})
+    # NO "Hubspot Email" link for texts/pushes. It used to get a Workflows *search*
+    # url purely as a built-marker, which opened a page with nothing on it (Tanner +
+    # Niko, Aug 12: "it's a nothing page"). There is no draft object to link to — a
+    # push/text is built by cloning a workflow — so the send kit ON THIS PAGE is the
+    # deliverable. Idempotency now comes from the kit heading, not a fake url.
     clear_failure_marks(page_id)
     print(f"  {fmt.lower()} send kit written on the row:", page_id)
+
+
+def has_send_kit(page_id):
+    """Was the paste-ready kit already written on this text/push row? (Replaces the
+    'has a HubSpot url' test that the email path uses.)"""
+    try:
+        for b in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"]:
+            if b["type"] == "heading_3" and SEND_KIT_MARK in "".join(
+                    x.get("plain_text", "") for x in b["heading_3"].get("rich_text", [])):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def process(page_id):
@@ -796,7 +809,12 @@ def main():
                 if not r["ready"]:
                     continue
                 pr = notion._call("GET", f"/pages/{r['id']}")["properties"]
-                if not (pr.get("Hubspot Email", {}) or {}).get("url"):
+                # "already built" differs by format: an email has a HubSpot draft url,
+                # a text/push has the send kit written on its page.
+                if notion.format_of(pr) in ("Text", "Push"):
+                    if not has_send_kit(r["id"]):
+                        targets.append(r["id"])
+                elif not (pr.get("Hubspot Email", {}) or {}).get("url"):
                     targets.append(r["id"])
             if targets:
                 break

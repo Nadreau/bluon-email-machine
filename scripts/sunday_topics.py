@@ -59,15 +59,39 @@ def recent_rows(limit=30):
 
 
 def _week_title():
-    """One row per week, dated: '📋 Ideas — Week of Aug 17' (the coming Monday)."""
+    """The coming week's planning row. Matches the pre-created separator rows
+    ('📋 Week of Aug 17') that Niko seeds ahead of time — the generator fills one
+    of those in rather than creating a competing row."""
     today = datetime.date.today()
     monday = today + datetime.timedelta(days=(7 - today.weekday()) % 7 or 7)
-    return monday, f"📋 Ideas — Week of {monday.strftime('%b %-d')}"
+    return monday, f"📋 Week of {monday.strftime('%b %-d')}"
+
+
+def find_week_row(title):
+    """The pre-seeded separator row for this week, if it exists."""
+    res = notion._call("POST", f"/databases/{notion.CALENDAR_DB_ID}/query", {"page_size": 100})
+    for r in res.get("results", []):
+        nm = "".join(x.get("plain_text", "") for x in (r["properties"].get("Email", {}).get("title") or []))
+        if nm == title:
+            return r["id"]
+    return None
 
 
 def already_dropped(rows):
+    """Ideas already added to this week's row? (the row itself may pre-exist empty)"""
     _, title = _week_title()
-    return any(r["name"] == title for r in rows)
+    pid = find_week_row(title)
+    if not pid:
+        return False
+    try:
+        for b in notion._call("GET", f"/blocks/{pid}/children?page_size=100")["results"]:
+            txt = "".join(x.get("plain_text", "") for x in
+                          (b.get(b["type"], {}).get("rich_text") or []))
+            if txt.startswith(IDEA_PREFIX):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _voice_bank():
@@ -124,6 +148,7 @@ def create_week_row(ideas):
     without a Send Date, and one weekly item — not six loose rows). The ideas
     live INSIDE the page; approved ones get their own dated row when drafted."""
     monday, title = _week_title()
+    existing = find_week_row(title)
     def t(c, **a):
         o = {"type": "text", "text": {"content": c}}
         if a: o["annotations"] = a
@@ -142,11 +167,15 @@ def create_week_row(ideas):
         for ln in [l for l in (idea.get("draft") or "").split("\n") if l.strip()][:10]:
             children.append({"object": "block", "type": "quote", "quote": {
                 "rich_text": [t(ln.strip()[:1900])]}})
+    if existing:   # append into the pre-seeded separator row
+        notion._call("PATCH", f"/blocks/{existing}/children", {"children": children})
+        print(f"added {len(ideas)} ideas to the existing {title}")
+        return
     notion._call("POST", "/pages", {"parent": {"database_id": notion.CALENDAR_DB_ID},
         "properties": {
             "Email": {"title": [{"type": "text", "text": {"content": title}}]},
             "Type": {"select": {"name": "📋 Week Plan"}},
-            "Status": {"select": {"name": "Idea"}},
+            "Status": {"select": {"name": "Backlog"}},
             "Send Date": {"date": {"start": monday.isoformat()}},
             notion.READY_ID: {"checkbox": False}},
         "children": children})
