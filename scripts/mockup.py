@@ -55,6 +55,29 @@ def fetch_hero_b64(url):
         return None
 
 
+
+def _runs(it):
+    """Render a flow item's styled runs (bold/italic/underline/link) so the mockup
+    matches what actually ships. Falls back to plain text for rows with no runs."""
+    runs = it.get("rich") or []
+    if not runs:
+        return html.escape(_disp_name(it.get("text", "")))
+    out = []
+    for r in runs:
+        frag = html.escape(_disp_name(r.get("text", "")))
+        if not frag:
+            continue
+        if r.get("italic"):
+            frag = f"<i>{frag}</i>"
+        if r.get("bold"):
+            frag = f"<b>{frag}</b>"
+        if r.get("underline") or r.get("href"):
+            color = ";color:#2f6df6" if r.get("href") else ""
+            frag = f"<span style='text-decoration:underline{color}'>{frag}</span>"
+        out.append(frag)
+    return "".join(out)
+
+
 def _img_html(b64, *, top=False):
     """An inline <img> (data URI) sized for the email column. `top` tightens the
     margin when it's the hero sitting above the headline."""
@@ -98,10 +121,10 @@ def inner_email_html(headline, flow, cta, *, top_hero_b64=None, top_is_banner=Fa
         elif k == "bullet":
             parts.append(
                 "<p style='margin:8px 0;color:#23496d;font-weight:600;font-size:15px;line-height:1.4'>"
-                f"&#9989;&nbsp;{html.escape(_disp_name(it.get('text', '')))}</p>")
+                f"&#9989;&nbsp;{_runs(it)}</p>")
         else:
             parts.append(
-                f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{html.escape(_disp_name(it.get('text', '')))}</p>")
+                f"<p style='margin:12px 0;color:#222222;font-size:15px;line-height:1.5'>{_runs(it)}</p>")
     body_inner = "".join(parts)
     button = (
         "<table role='presentation' align='center' cellpadding='0' cellspacing='0' style='margin:22px auto 6px'>"

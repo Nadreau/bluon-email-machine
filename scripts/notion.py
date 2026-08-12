@@ -301,6 +301,20 @@ def create_draft(*, subject, preview, body, cta, audience, engagement, channel,
 
 
 # ---------- parse an edited draft page (for Regenerate) ----------
+def rich_runs(b):
+    """A block's rich text as styled RUNS — [{text, bold, italic, underline, href}].
+    Tanner's edits are bold/underline in Notion (and Peter writes copy that way),
+    so the pipeline has to carry formatting instead of flattening to plain text."""
+    t = b.get("type")
+    out = []
+    for x in b.get(t, {}).get("rich_text", []):
+        ann = x.get("annotations", {})
+        out.append({"text": x.get("plain_text", ""),
+                    "bold": bool(ann.get("bold")), "italic": bool(ann.get("italic")),
+                    "underline": bool(ann.get("underline")), "href": x.get("href")})
+    return out
+
+
 def _block_text(b):
     t = b.get("type")
     return "".join(x.get("plain_text", "") for x in b.get(t, {}).get("rich_text", []))
@@ -394,10 +408,10 @@ def parse_draft_page(page_id):
                 continue
             if t == "bulleted_list_item" and clean:
                 body[variant].append("- " + clean)
-                content[variant].append({"kind": "bullet", "text": clean})
+                content[variant].append({"kind": "bullet", "text": clean, "rich": rich_runs(b)})
             elif t == "paragraph" and clean and "Bluon, Inc." not in clean:
                 body[variant].append(clean)
-                content[variant].append({"kind": "para", "text": clean})
+                content[variant].append({"kind": "para", "text": clean, "rich": rich_runs(b)})
     out = {"subject": subject, "body_lines": body["a"], "cta": cta, "cta_dest": cta_dest,
            "preview": preview, "style_notes": [], "hero_url": hero_url,
            "content": content["a"], "mockup_old_ids": mockup_old_ids}

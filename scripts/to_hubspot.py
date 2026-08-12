@@ -48,9 +48,15 @@ AUDIENCE_LISTS = {   # per-segment ILS mappings; update if segments change
     # Residential = all but Commercial Contractors, eng+uneng. The two ServiceTitan
     # lists (24707 eng / 24699 uneng) were REMOVED Jul 1 2026: ServiceTitan now gets
     # its own send, and leaving them here would double-send ~12K ST contacts.
-    "Residential":  ["24711", "24714", "24708", "24712", "24710",
-                     "24706", "24703", "24700", "24704", "24702"],
-    "Commercial":   ["24713", "24709", "24705", "24701"],                    # Commercial Contractors, eng+uneng
+    # The two BuildOps "(2nd in series)" lists (24708 eng / 24700 uneng) MOVED to
+    # Commercial Aug 12 2026 — Tanner added them to the XOi commercial send by hand
+    # ("as they are commercial"). They had been sitting in Residential, so BuildOps
+    # contractors were getting the resi send and would have double-received if the
+    # ids were simply copied into both.
+    "Residential":  ["24711", "24714", "24712", "24710",
+                     "24706", "24703", "24704", "24702"],
+    "Commercial":   ["24713", "24709", "24705", "24701",   # Commercial Contractors, eng+uneng
+                     "24708", "24700"],                    # BuildOps Potentials (2nd in series), eng+uneng
     "ServiceTitan": ["24707", "24699"],   # ENGAGED (6.2K) + UNENGAGED (5.8K) ServiceTitan Potentials
     # Distributor contacts for BluonSearch. Kelsey uploads these as monthly CSV lists
     # ("June 2026 Over 100" / "Under 100"), so refresh these ids when a newer month
@@ -187,12 +193,45 @@ def utm_link(base, pr):
     return base + sep + urllib.parse.urlencode(q)
 
 
-def body_html(info, flow, uniq=""):
-    """WYSIWYG-safe Bluon body: headline + the ordered flow (paragraphs, check-
-    bullets, and any image Pete moved INTO the copy — hosted + inlined right where
-    he placed it). The CTA is the template's native button module, so it's not here."""
-    out = [f'<h2 style="color:#23496d;text-align:center;font-weight:800;font-size:22px;'
-           f'margin:0 0 16px">{html.escape(info["subject"])}</h2>']
+def runs_html(it):
+    """Styled runs → HubSpot-editor-native inline markup. Bold/underline/links a
+    human applied in Notion have to survive into the email: Tanner had to re-add
+    Peter's bolding by hand after the first XOi build flattened it (Aug 12). Uses
+    the exact <span> forms HubSpot's own editor writes, so his later edits don't
+    fight the markup. Falls back to the plain text when a row has no runs."""
+    runs = it.get("rich") or []
+    if not runs:
+        return personalize(html.escape(it.get("text", "")))
+    out = []
+    for r in runs:
+        frag = personalize(html.escape(r.get("text", "")))
+        if not frag:
+            continue
+        if r.get("italic"):
+            frag = f'<span style="font-style: italic;">{frag}</span>'
+        if r.get("bold"):
+            frag = f'<span style="font-weight: bold;">{frag}</span>'
+        if r.get("underline"):
+            frag = f'<span style="text-decoration: underline;">{frag}</span>'
+        if r.get("href"):
+            frag = (f'<a href="{html.escape(r["href"], quote=True)}" '
+                    f'style="color: #2f6df6; font-weight: 600; text-decoration: underline;">{frag}</a>')
+        out.append(frag)
+    return "".join(out)
+
+
+def body_html(info, flow, uniq="", headline=""):
+    """WYSIWYG-safe Bluon body: the ordered flow (paragraphs, check-bullets, and any
+    image moved INTO the copy — hosted + inlined right where it sits). The CTA is the
+    template's native button module, so it's not here.
+
+    NO auto-headline: the machine used to repeat the subject line as an <h2> at the
+    top of every body, and Tanner deleted it by hand (Aug 12). Pass `headline` only
+    for a real headline that differs from the subject."""
+    out = []
+    if (headline or "").strip():
+        out.append(f'<h2 style="color:#23496d;text-align:center;font-weight:800;font-size:22px;'
+                   f'margin:0 0 16px">{html.escape(headline)}</h2>')
     n = 0
     for it in flow:
         k = it.get("kind")
@@ -204,11 +243,42 @@ def body_html(info, flow, uniq=""):
                            f'border-radius:8px;display:block;margin:16px auto" alt="">')
         elif k == "bullet":
             out.append(f'<p style="color:#23496d;font-weight:600;font-size:15px;margin:8px 0">'
-                       f'&#9989;&nbsp;{personalize(html.escape(it.get("text", "")))}</p>')
+                       f'&#9989;&nbsp;{runs_html(it)}</p>')
         else:
             out.append(f'<p style="color:#222222;font-size:15px;line-height:1.5;margin:12px 0">'
-                       f'{personalize(html.escape(it.get("text", "")))}</p>')
+                       f'{runs_html(it)}</p>')
     return "".join(out)
+
+
+# Tanner's house spacing (stated Aug 12, values read off his edited XOi email):
+# logo 20px top/bottom, text sections 0px, image/button 10px — L/R per module type.
+HOUSE_PADDING = {
+    LOGO_MODULE:   {"padding-top": "20px", "padding-bottom": "20px",
+                    "padding-left": "20px", "padding-right": "20px"},
+    BODY_MODULE:   {"padding-top": "0px", "padding-bottom": "0px",
+                    "padding-left": "30px", "padding-right": "30px"},
+    BUTTON_MODULE: {"padding-top": "10px", "padding-bottom": "10px",
+                    "padding-left": "20px", "padding-right": "20px"},
+}
+BODYCLOSE_PADDING = dict(HOUSE_PADDING[BODY_MODULE])
+BODYIMG_PADDING = {"padding-top": "10px", "padding-bottom": "10px",
+                   "padding-left": "30px", "padding-right": "30px"}
+
+
+def apply_house_padding(widgets):
+    """Stamp the house spacing onto a draft's modules (in place)."""
+    for wid, mod in widgets.items():
+        pad = HOUSE_PADDING.get(wid)
+        if pad is None:
+            if "bodyimg" in wid:
+                pad = BODYIMG_PADDING
+            elif "bodyclose" in wid or "bodytext" in wid:
+                pad = BODYCLOSE_PADDING
+        if pad:
+            body = mod.setdefault("body", {})
+            body["hs_enable_module_padding"] = True
+            body["hs_wrapper_css"] = {**(body.get("hs_wrapper_css") or {}), **pad}
+    return widgets
 
 
 def host_image(url, name="hero"):
@@ -362,6 +432,7 @@ def make_draft(page_id):
     # "Clay Naiser") — the campaign convention is Bluon / contactus@bluon.com, and
     # the copy signs off "-Bluon" / "The Bluon Team". (Kelsey can switch to a real
     # person in the UI if deliverability calls for it.)
+    apply_house_padding(widgets)
     patch = {"subject": info["subject"], "name": name,
              "from": {"fromName": "Bluon", "replyTo": "contactus@bluon.com"},
              "content": {"widgets": widgets}}
@@ -393,6 +464,15 @@ def make_draft(page_id):
         split_body_image.split(eid, split_body_image._template_img_mod())
     except Exception as e:
         print("  inline-image split skipped:", e)
+
+    # the split creates NEW modules (bodyimg/bodyclose) after the build patch, so
+    # stamp the house spacing again to cover them
+    try:
+        cur = hs("GET", f"/marketing/v3/emails/{eid}")["content"]["widgets"]
+        hs("PATCH", f"/marketing/v3/emails/{eid}",
+           {"content": {"widgets": apply_house_padding(cur)}})
+    except Exception as e:
+        print("  padding pass skipped:", e)
 
     snapshot(page_id, info, pr, landing_url=base_lp)
     return url
