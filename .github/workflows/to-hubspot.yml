@@ -19,7 +19,12 @@ on:
         description: Notion page id
         required: false
   schedule:
-    - cron: "0 * * * *"   # safety-net sweep every 30 min (idempotent)
+    # Safety-net sweep, idempotent. Every 15 min during working hours because the
+    # Notion webhook often arrives with an EMPTY page id (3 of 5 presses on Aug 12)
+    # and falls through to this sweep — an hourly cadence meant "I checked the box
+    # and nothing happened" for up to an hour. Hourly overnight.
+    - cron: "*/15 11-23 * * 1-5"
+    - cron: "0 0-10 * * *"
 
 permissions:
   contents: read

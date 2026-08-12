@@ -701,6 +701,15 @@ def make_send_kit(page_id, pr, fmt):
     # Niko, Aug 12: "it's a nothing page"). There is no draft object to link to — a
     # push/text is built by cloning a workflow — so the send kit ON THIS PAGE is the
     # deliverable. Idempotency now comes from the kit heading, not a fake url.
+    # VISIBLE confirmation on the row. Building a text/push produces no HubSpot draft
+    # and no link, so without this the row looks completely unchanged after checking
+    # Ready — Niko checked the box, saw nothing move, and reasonably assumed the
+    # automation was broken (Aug 12). Status is the one thing visible in the table view.
+    try:
+        notion._call("PATCH", f"/pages/{page_id}",
+                     {"properties": {"Status": {"select": {"name": "✅ Built"}}}})
+    except Exception as e:
+        print("  (status stamp skipped:", e, ")")
     clear_failure_marks(page_id)
     print(f"  {fmt.lower()} send kit written on the row:", page_id)
 
