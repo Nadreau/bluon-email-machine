@@ -48,6 +48,38 @@ def sl(path, tries=6):
     raise RuntimeError("smartlead: retries exhausted for " + path)
 
 
+TRACKING_LIVE_FROM = "2026-05-26"   # Anevo campaigns before this have NO open/click tracking
+
+
+def hubspot_side(since="2026-05-26"):
+    """Our own HubSpot numbers for the same window, so the comparison is
+    apples-to-apples with what the team reads every day."""
+    import to_hubspot
+    res, after, agg = [], None, collections.Counter()
+    while True:
+        q = "/marketing/v3/emails?limit=100&sort=-publishDate" + (f"&after={after}" if after else "")
+        p = to_hubspot.hs("GET", q)
+        res += p["results"]
+        after = (p.get("paging") or {}).get("next", {}).get("after")
+        if not after or len(res) >= 300:
+            break
+    for e in res:
+        pd = e.get("publishDate") or ""
+        if not e.get("isPublished") or pd[:10] < since:
+            continue
+        try:
+            s = to_hubspot.hs("GET", f"/marketing/v3/emails/{e['id']}?includeStats=true"
+                              ).get("stats", {}).get("counters", {})
+        except Exception:
+            continue
+        if not s.get("sent"):
+            continue
+        for k in ("sent", "delivered", "open", "click", "bounce", "unsubscribed"):
+            agg[k] += s.get(k, 0)
+        agg["n"] += 1
+    return agg
+
+
 def pull():
     """Everything the scorecard needs, in one pass."""
     camps = sl("/campaigns")

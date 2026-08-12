@@ -199,6 +199,19 @@ def regen_page(page_id, clear_flag=False):  # clear_flag kept for call-compat; n
             notion._call("PATCH", f"/blocks/{bid}", {"archived": True})
         except Exception:
             pass
+    # A page built by hand can be missing the "📧 Mockup" heading — without it the
+    # parser has no end-of-email marker, so previous renders get read back as BODY
+    # content (an old mockup was picked up as the hero image, Aug 12). Add it once.
+    has_heading = any(
+        b["type"] == "heading_3" and notion.MOCKUP_HEADING in
+        "".join(x.get("plain_text", "") for x in b["heading_3"].get("rich_text", []))
+        for b in notion._call("GET", f"/blocks/{page_id}/children?page_size=100")["results"])
+    if not has_heading:
+        children = [{"object": "block", "type": "divider", "divider": {}},
+                    {"object": "block", "type": "heading_3", "heading_3": {"rich_text": [
+                        {"type": "text", "text": {"content":
+                            f"📧  {notion.MOCKUP_HEADING} — press 🔄 Regenerate Mockup after edits"}}]}}
+                    ] + children
     notion._call("PATCH", f"/blocks/{page_id}/children", {"children": children})
     # Also refresh the "Email Image" file property (the report-time snapshot of how the
     # email sends) so it never goes STALE after a copy edit. It was previously written

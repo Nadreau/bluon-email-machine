@@ -109,10 +109,11 @@ def inner_email_html(headline, flow, cta, *, top_hero_b64=None, top_is_banner=Fa
     pre-fetched data URI in "_b64"."""
     if top_hero_b64:
         hero = _img_html(top_hero_b64, top=True)
-    elif top_is_banner:
-        hero = _banner_html(headline)
     else:
-        hero = ""                      # image was moved down → it renders in the flow
+        # No real graphic → no hero. The old gradient "banner" re-printed the subject
+        # with a ▶ play button, which looked like a YouTube embed nobody asked for and
+        # doesn't exist in the built email (to_hubspot drops the hero module here).
+        hero = ""
     parts = []
     for it in flow:
         k = it.get("kind")
@@ -133,12 +134,10 @@ def inner_email_html(headline, flow, cta, *, top_hero_b64=None, top_is_banner=Fa
         f"<a href='{cta_url}' style='display:inline-block;padding:13px 30px;color:#ffffff;"
         f"font-weight:700;font-size:16px;text-decoration:none'>&#128197;&nbsp;{html.escape(cta)}</a>"
         "</td></tr></table>")
-    # No headline block in the draft? Then the email has no headline — render it that way.
-    # The mockup is a picture of the ACTUAL email, so it must never invent a headline from
-    # metadata (e.g. the row's Subject property, which is the inbox subject, not body copy).
-    head = ("<div style='text-align:center;padding:18px 6px 2px'>"
-            f"<div style='font-size:22px;font-weight:800;color:#23496d;line-height:1.2'>"
-            f"{html.escape(headline)}</div></div>") if (headline or "").strip() else ""
+    # NO headline plaque. Tanner deletes the subject-repeat <h2> from every build
+    # (house style, Aug 12) and to_hubspot no longer emits one, so the mockup must not
+    # draw one either — it was showing a headline the real email doesn't have.
+    head = ""
     return (
         f"{hero}"
         f"{head}"
