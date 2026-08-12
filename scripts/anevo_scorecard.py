@@ -101,9 +101,15 @@ def pull():
              "unsub": int(a.get("unsubscribed_count") or 0),
              "interested": int(ls.get("interested") or 0),
              "leads": int(ls.get("total") or 0)}
+        r["open"] = int(a.get("unique_open_count") or a.get("open_count") or 0)
+        r["click"] = int(a.get("unique_click_count") or a.get("click_count") or 0)
+        r["tracked"] = r["created"] >= TRACKING_LIVE_FROM and (r["open"] or r["click"])
         rows.append(r)
         for k in ("sent", "reply", "bounce", "unsub", "interested", "leads"):
             tot[k] += r[k]
+        if r["tracked"]:
+            for k in ("sent", "open", "click", "bounce", "reply"):
+                tot["trk_" + k] += r[k]
     rows.sort(key=lambda r: r["created"], reverse=True)
 
     months = collections.defaultdict(collections.Counter)
@@ -111,6 +117,12 @@ def pull():
         m = months[r["created"][:7]]
         for k in ("sent", "reply", "bounce", "interested"):
             m[k] += r[k]
+
+    hs = {}
+    try:
+        hs = hubspot_side(TRACKING_LIVE_FROM)
+    except Exception as e:
+        print("  hubspot comparison skipped:", str(e)[:80])
 
     accts = []
     off = 0
@@ -120,7 +132,7 @@ def pull():
         if len(b) < 100:
             break
         off += 100
-    return rows, tot, months, accts
+    return rows, tot, months, accts, hs
 
 
 # ---------- block helpers ----------
@@ -170,7 +182,7 @@ def bar(value, peak, width=22, char="█", empty="░"):
     return char * n + empty * (width - n)
 
 
-def build_blocks(rows, tot, months, accts):
+def build_blocks(rows, tot, months, accts, hs):
     sent, reply, bounce = tot["sent"], tot["reply"], tot["bounce"]
     interested = tot["interested"]
     reply_pct = 100 * reply / sent if sent else 0
@@ -194,6 +206,36 @@ def build_blocks(rows, tot, months, accts):
         para(f"Live from the Smartlead API · rebuilt {now.strftime('%b %-d, %Y')} · "
              f"reply rate is the only trustworthy metric here (opens/clicks on cold sends are "
              f"inflated by security scanners)", italic=True, color="gray"),
+        head("Anevo vs our own HubSpot sends"),
+        para("Same window (since tracking came on), same metrics you read every day.",
+             italic=True, color="gray"),
+        table([
+            ["Metric", "Anevo (cold)", "Our HubSpot sends"],
+            ["Emails sent", f"{tot['trk_sent']:,}", f"{hs.get('sent', 0):,}"],
+            ["Delivery rate",
+             f"{100*(tot['trk_sent']-tot['trk_bounce'])/max(tot['trk_sent'],1):.1f}%",
+             f"{100*hs.get('delivered',0)/max(hs.get('sent',1),1):.1f}%"],
+            ["Open rate",
+             f"{100*tot['trk_open']/max(tot['trk_sent'],1):.1f}%  ⚠️ scanner-inflated",
+             f"{100*hs.get('open',0)/max(hs.get('delivered',1),1):.1f}%  (bot-filtered)"],
+            ["Click rate",
+             f"{100*tot['trk_click']/max(tot['trk_sent'],1):.1f}%  ⚠️ scanner-inflated",
+             f"{100*hs.get('click',0)/max(hs.get('delivered',1),1):.2f}%  (bot-filtered)"],
+            ["Bounce rate",
+             f"{100*tot['trk_bounce']/max(tot['trk_sent'],1):.2f}%",
+             f"{100*hs.get('bounce',0)/max(hs.get('sent',1),1):.2f}%"],
+            ["Reply rate",
+             f"{100*tot['trk_reply']/max(tot['trk_sent'],1):.2f}%", "n/a (broadcast)"],
+        ], 3),
+        callout([t("Read the open/click columns carefully. ", bold=True),
+                 t("Anevo's look far better than ours and they are not real. Proof from "
+                   "Bluon's own data: the 6/25 Residential send was split by mail provider — "
+                   "the GMAIL half shows 97.5% open / 0.4% click, the OUTLOOK half shows "
+                   "53.8% open / 51.9% click. Same copy, same day. Microsoft's security "
+                   "scanner pre-clicks every link, which is where a ~50% click rate comes "
+                   "from. HubSpot filters that traffic out; Smartlead does not. So Anevo's "
+                   "opens/clicks measure robots, and only replies and bounces survive the "
+                   "comparison.")], "⚠️", "yellow_background"),
         head("The numbers that matter"),
         table([
             ["Metric", "Result", "Read"],
@@ -307,13 +349,13 @@ def build_blocks(rows, tot, months, accts):
 
 
 def rebuild(dry=False):
-    rows, tot, months, accts = pull()
+    rows, tot, months, accts, hs = pull()
     print(f"{len(rows)} campaigns · {tot['sent']:,} sent · {tot['reply']:,} replies "
           f"({100*tot['reply']/max(tot['sent'],1):.2f}%) · {tot['interested']} interested · "
           f"{len(accts)} mailboxes")
     if dry:
         return
-    blocks = build_blocks(rows, tot, months, accts)
+    blocks = build_blocks(rows, tot, months, accts, hs)
     # find-or-create the page under the Reporting hub, then rebuild its body in place
     page_id = None
     for c in notion._call("GET", f"/blocks/{PARENT_PAGE}/children?page_size=100")["results"]:
