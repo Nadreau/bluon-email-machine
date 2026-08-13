@@ -700,6 +700,8 @@ PUSH_TEXT_TEMPLATE_FLOW = os.environ.get("HS_PUSHTEXT_FLOW", "1863183480")
 # so this is the only shape where the machine can write push copy end to end.
 # Code actions are already a normal Bluon building block (every text is one).
 PUSH_ENDPOINT = "https://prod.bluonapi.com/webhook/v1/push-notification-campaigns/send"
+# The Twilio action's message sits between these markers in its own source.
+MSG_RE = re.compile(r"(// --- EDIT YOUR MESSAGE BELOW ---\s*\n\s*const body = `)(.*?)(`;)", re.S)
 PUSH_CODE_TMPL = """/**
  * Bluon push notification — built by the comms machine from the Notion row.
  *
@@ -803,6 +805,40 @@ def build_push_text_workflow(page_id, pr, fmt, info):
             if MSG_RE.search(code):
                 a["sourceCode"] = MSG_RE.sub(
                     lambda m: m.group(1) + info["message"].replace("`", "'") + m.group(3), code, count=1)
+    # The template sends BOTH a push and a text. Keep only the step this row is for,
+    # or the workflow also fires the OTHER channel carrying the template's inherited
+    # copy — a Push row was about to send Tanner's old search TEXT (Niko, Aug 13).
+    # Walk the CONNECTION chain, not the actions array — the array is ordered by
+    # actionId, so filtering it put the send BEFORE the delay (push fired instantly).
+    _by_id = {a["actionId"]: a for a in flow["actions"]}
+    _chain, _cur = [], flow.get("startActionId")
+    while _cur and _cur in _by_id and len(_chain) < 25:
+        _a = _by_id.pop(_cur)
+        _chain.append(_a)
+        _cur = (_a.get("connection") or {}).get("nextActionId")
+    _chain += list(_by_id.values())          # anything not on the main path
+    keep, drop = [], set()
+    for a in _chain:
+        t, code = a.get("type"), (a.get("sourceCode") or "").lower()
+        is_text_send = t == "CUSTOM_CODE" and "twilio" in code
+        is_push_send = (t == "WEBHOOK") or (t == "CUSTOM_CODE" and "push-notification" in code)
+        wrong_channel = (is_text_send and fmt == "Push") or (is_push_send and fmt == "Text")
+        # the 20-minute spacer only exists to separate the two sends
+        spacer = a.get("actionTypeId") == "0-1"
+        if wrong_channel or spacer:
+            drop.add(a["actionId"]); continue
+        keep.append(a)
+    if drop:
+        order = [a for a in keep]
+        for i, a in enumerate(order):          # rewire into a straight line
+            nxt = order[i + 1]["actionId"] if i + 1 < len(order) else None
+            if nxt:
+                a["connection"] = {"edgeType": "STANDARD", "nextActionId": nxt}
+            else:
+                a.pop("connection", None)
+        flow["actions"] = order
+        flow["startActionId"] = order[0]["actionId"] if order else flow.get("startActionId")
+        print(f"  dropped {len(drop)} step(s) that belong to the other channel")
     new = hs("POST", "/automation/v4/flows", flow)
     # Canonical editor url. The path MUST include /platform/ — "/workflows/<portal>/
     # flow/<id>/edit" renders "that workflow doesn't exist" (Niko hit this Aug 13).
