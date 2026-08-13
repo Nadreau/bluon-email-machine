@@ -680,6 +680,63 @@ def _archive_old_kit(page_id):
         prev = b
 
 
+# The live push/text workflow we clone for every new one: static-date delay →
+# push webhook (auth via the PROD_WEBHOOK_API_KEY secret) → 20 min → Twilio SMS
+# custom-code action. Cloning preserves the webhook auth and the Twilio secrets,
+# which is why we copy a real workflow instead of building one from scratch.
+PUSH_TEXT_TEMPLATE_FLOW = os.environ.get("HS_PUSHTEXT_FLOW", "1863183480")
+MSG_RE = re.compile(r"(// --- EDIT YOUR MESSAGE BELOW ---\s*\n\s*const body = `)(.*?)(`;)", re.S)
+
+
+def _epoch_ms(date_str, hour=11):
+    """Notion date (YYYY-MM-DD[Thh:mm]) → epoch ms at the send hour, UTC."""
+    import datetime
+    if not date_str:
+        return None
+    d = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00")) if "T" in date_str \
+        else datetime.datetime.fromisoformat(date_str + f"T{hour:02d}:00:00")
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=datetime.timezone.utc)
+    return str(int(d.timestamp() * 1000))
+
+
+def build_push_text_workflow(page_id, pr, fmt, info):
+    """Clone the live push/text workflow into a NEW disabled one for this row, with
+    the send date and (for texts) the message baked in, and return its editor url.
+
+    What the API can and cannot do here, tested Aug 12:
+      CAN  — clone the flow with webhook auth + Twilio secrets intact, set the
+             static send date, rewrite the Twilio message in the custom-code action.
+      CANNOT — set the push notification's title/body. HubSpot accepts a `body` on a
+             WEBHOOK action and silently DROPS it, so that copy has to be pasted in
+             the UI. The row says so explicitly rather than pretending it's done.
+    """
+    import copy as _copy
+    src = hs("GET", f"/automation/v4/flows/{PUSH_TEXT_TEMPLATE_FLOW}")
+    flow = {k: _copy.deepcopy(src[k]) for k in
+            ("flowType", "actions", "startActionId", "nextAvailableActionId", "type",
+             "objectTypeId", "customProperties", "suppressionListIds", "timeWindows",
+             "blockedDates") if k in src}
+    name = "".join(x.get("plain_text", "") for x in (pr.get("Email", {}).get("title") or []))
+    send = ((pr.get("Send Date", {}) or {}).get("date") or {}).get("start")
+    flow["name"] = f"{name}"[:90]
+    flow["isEnabled"] = False
+    # Manual enrollment only: a fresh clone must never start sending on its own.
+    flow["enrollmentCriteria"] = {"shouldReEnroll": False, "type": "MANUAL"}
+    when = _epoch_ms(send)
+    for a in flow["actions"]:
+        if a.get("actionTypeId") == "0-35" and when:      # static-date delay
+            a.setdefault("fields", {}).setdefault("date", {})["staticValue"] = when
+            a["fields"]["date"]["type"] = "STATIC_VALUE"
+        if a.get("type") == "CUSTOM_CODE" and fmt == "Text" and info.get("message"):
+            code = a.get("sourceCode") or ""
+            if MSG_RE.search(code):
+                a["sourceCode"] = MSG_RE.sub(
+                    lambda m: m.group(1) + info["message"].replace("`", "'") + m.group(3), code, count=1)
+    new = hs("POST", "/automation/v4/flows", flow)
+    return new["id"], f"https://app.hubspot.com/workflows/{PORTAL}/flow/{new['id']}/edit"
+
+
 def make_send_kit(page_id, pr, fmt):
     """Ready-to-Build on a Text/Push row. There is no HubSpot object to create — a
     text or push is built by cloning a workflow — so the DRAFT PAGE is the whole
@@ -709,6 +766,28 @@ def make_send_kit(page_id, pr, fmt):
         regenerate.regen_page(page_id)
     except Exception as e:
         print("  mockup refresh skipped:", str(e)[:80])
+
+    # Build the actual HubSpot workflow and link it on the row. This is what the
+    # check is FOR — before this it produced no artifact at all and the row looked
+    # untouched (Niko, Aug 12: "make the automation work so that something gets linked").
+    existing = (pr.get("Hubspot Email", {}) or {}).get("url")
+    if not existing:
+        try:
+            fid, url = build_push_text_workflow(page_id, pr, fmt, info)
+            notion._call("PATCH", f"/pages/{page_id}",
+                         {"properties": {"Hubspot Email": {"url": url}}})
+            print(f"  workflow {fid} created (OFF, manual enrollment): {url}")
+            if fmt == "Push":
+                notion._call("PATCH", f"/blocks/{page_id}/children", {"children": [
+                    {"object": "block", "type": "callout", "callout": {
+                        "rich_text": [{"type": "text", "text": {"content":
+                            "Workflow built and linked, turned OFF. One step the API can't do: "
+                            "open the webhook step and paste the Title and Body above into the "
+                            "request body (HubSpot doesn't accept those over the API). Then test "
+                            "on yourself, set the real trigger, turn it on."}}],
+                        "icon": {"type": "emoji", "emoji": "🔔"}, "color": "yellow_background"}}]})
+        except Exception as e:
+            print("  workflow build failed:", str(e)[:200])
     try:
         notion._call("PATCH", f"/pages/{page_id}",
                      {"properties": {"Status": {"select": {"name": "✅ Built"}}}})
