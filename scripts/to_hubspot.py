@@ -685,6 +685,28 @@ def _archive_old_kit(page_id):
 # custom-code action. Cloning preserves the webhook auth and the Twilio secrets,
 # which is why we copy a real workflow instead of building one from scratch.
 PUSH_TEXT_TEMPLATE_FLOW = os.environ.get("HS_PUSHTEXT_FLOW", "1863183480")
+PUSH_ENDPOINT = "https://prod.bluonapi.com/webhook/v1/push-notification-campaigns/send"
+
+# The push copy CANNOT live in a native WEBHOOK action: HubSpot's flows API neither
+# reads nor writes that action's request body (it accepts `body` and silently drops
+# it — verified by round-trip Aug 12, and it returns nothing for workflows that
+# demonstrably have one). NOT a scope problem; a missing scope 403s, this no-ops.
+# A CUSTOM_CODE action does round-trip in full and can reference the same
+# PROD_WEBHOOK_API_KEY secret, so we send the push from code and get the title/body
+# under machine control.
+PUSH_CODE_TMPL = """const axios = require('axios');
+
+// Copy comes from the Notion row. Edit it THERE and re-check Ready to Build.
+exports.main = async (event, callback) => {
+  const title = %s;
+  const body  = %s;
+  const r = await axios.post(
+    '%s',
+    { title, body, user_id: event.inputFields['nova_id'],
+      bluon_campaign_key: 'marketingpush' },
+    { headers: { 'x-api-key': process.env.PROD_WEBHOOK_API_KEY } });
+  callback({ outputFields: { status: String(r.status) } });
+};"""
 MSG_RE = re.compile(r"(// --- EDIT YOUR MESSAGE BELOW ---\s*\n\s*const body = `)(.*?)(`;)", re.S)
 
 
@@ -724,10 +746,22 @@ def build_push_text_workflow(page_id, pr, fmt, info):
     # Manual enrollment only: a fresh clone must never start sending on its own.
     flow["enrollmentCriteria"] = {"shouldReEnroll": False, "type": "MANUAL"}
     when = _epoch_ms(send)
-    for a in flow["actions"]:
+    for a in list(flow["actions"]):
         if a.get("actionTypeId") == "0-35" and when:      # static-date delay
             a.setdefault("fields", {}).setdefault("date", {})["staticValue"] = when
             a["fields"]["date"]["type"] = "STATIC_VALUE"
+        if a.get("type") == "WEBHOOK" and fmt == "Push":
+            # swap the native webhook for code carrying this row's title/body
+            flow["actions"][flow["actions"].index(a)] = {
+                "actionId": a["actionId"], "type": "CUSTOM_CODE", "runtime": "NODE20X",
+                "secretNames": ["PROD_WEBHOOK_API_KEY"],
+                "sourceCode": PUSH_CODE_TMPL % (json.dumps(info.get("title", "")),
+                                                json.dumps(info.get("body", "")),
+                                                PUSH_ENDPOINT),
+                "inputFields": [{"name": "nova_id", "value": {
+                    "propertyName": "nova_id", "type": "OBJECT_PROPERTY"}}],
+                "outputFields": [], "connection": a.get("connection")}
+            continue
         if a.get("type") == "CUSTOM_CODE" and fmt == "Text" and info.get("message"):
             code = a.get("sourceCode") or ""
             if MSG_RE.search(code):
@@ -777,15 +811,7 @@ def make_send_kit(page_id, pr, fmt):
             notion._call("PATCH", f"/pages/{page_id}",
                          {"properties": {"Hubspot Email": {"url": url}}})
             print(f"  workflow {fid} created (OFF, manual enrollment): {url}")
-            if fmt == "Push":
-                notion._call("PATCH", f"/blocks/{page_id}/children", {"children": [
-                    {"object": "block", "type": "callout", "callout": {
-                        "rich_text": [{"type": "text", "text": {"content":
-                            "Workflow built and linked, turned OFF. One step the API can't do: "
-                            "open the webhook step and paste the Title and Body above into the "
-                            "request body (HubSpot doesn't accept those over the API). Then test "
-                            "on yourself, set the real trigger, turn it on."}}],
-                        "icon": {"type": "emoji", "emoji": "🔔"}, "color": "yellow_background"}}]})
+
         except Exception as e:
             print("  workflow build failed:", str(e)[:200])
     try:
