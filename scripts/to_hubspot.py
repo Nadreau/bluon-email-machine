@@ -685,20 +685,58 @@ def _archive_old_kit(page_id):
 # custom-code action. Cloning preserves the webhook auth and the Twilio secrets,
 # which is why we copy a real workflow instead of building one from scratch.
 PUSH_TEXT_TEMPLATE_FLOW = os.environ.get("HS_PUSHTEXT_FLOW", "1863183480")
-# HOW BLUON ACTUALLY BUILDS THESE (surveyed across every push/text flow, Aug 12):
-#   TEXT  = a CUSTOM_CODE action calling Twilio (30 of 30 text sends). The message
-#           lives in the action's own source, inside the workflow — not in a repo.
-#   PUSH  = a native WEBHOOK action POSTing to the Bluon API (27 of 27 push sends).
-#   Everything is a workflow, including one-offs: a single text is just a workflow
-#   with one code step ("Technician Text - Test", "TEXT Operational ServiceTitan
-#   Plugin Issue #1"); a single push is a workflow with one webhook step
-#   ("Maintenx Survey Push 7.2026").
-# We clone that shape rather than invent one. A custom-code push WOULD let the API
-# set the copy, but it would be the only push in the account shaped that way, so we
-# keep the webhook and accept one manual paste for push title/body (HubSpot's flows
-# API neither reads nor writes a webhook action's request body — not a scope issue,
-# a missing scope 403s and this silently no-ops).
-MSG_RE = re.compile(r"(// --- EDIT YOUR MESSAGE BELOW ---\s*\n\s*const body = `)(.*?)(`;)", re.S)
+# HOW BLUON BUILDS THESE (surveyed across every push/text flow, Aug 12):
+#   TEXT = CUSTOM_CODE action calling Twilio (30 of 30 text sends)
+#   PUSH = historically a native WEBHOOK action to the Bluon API (27 of 27)
+#   Everything is a workflow, including one-offs.
+#
+# We clone that flow but send the PUSH from a CUSTOM_CODE action instead of the
+# webhook — same endpoint, same PROD_WEBHOOK_API_KEY secret, same payload — because
+# HubSpot's flows API cannot write a webhook action's request body. That is not a
+# scope problem: the WEBHOOK schema exposes exactly seven fields (actionId,
+# authSettings, connection, method, queryParams, type, webhookUrl) and every
+# plausible body key (body / requestBody / payload / bodyFields / fields) is
+# accepted and silently dropped — tested all five. Custom code round-trips fully,
+# so this is the only shape where the machine can write push copy end to end.
+# Code actions are already a normal Bluon building block (every text is one).
+PUSH_ENDPOINT = "https://prod.bluonapi.com/webhook/v1/push-notification-campaigns/send"
+PUSH_CODE_TMPL = """/**
+ * Bluon push notification — built by the comms machine from the Notion row.
+ *
+ * WHAT IT DOES: POSTs this contact's Nova ID plus the copy below to the Bluon
+ * push API, the same endpoint and auth the hand-built push workflows use. It is
+ * a code action rather than the native webhook step ONLY because HubSpot's API
+ * cannot write a webhook's request body, and we want the copy machine-managed.
+ *
+ * EDIT THE COPY IN NOTION, not here — re-check "Ready to Build" and this
+ * regenerates. Hand edits here are overwritten on the next build.
+ *
+ * SECRET:  PROD_WEBHOOK_API_KEY  (sent as the x-api-key header)
+ * INPUT:   nova_id  (contact property)
+ * OUTPUT:  status, sent
+ */
+const axios = require('axios');
+
+const TITLE = %s;
+const BODY  = %s;
+
+exports.main = async (event, callback) => {
+  const novaId = event.inputFields['nova_id'];
+  if (!novaId) {
+    return callback({ outputFields: { status: 'skipped_no_nova_id', sent: 'false' } });
+  }
+  try {
+    const res = await axios.post('%s',
+      { title: TITLE, body: BODY, user_id: novaId, bluon_campaign_key: 'marketingpush' },
+      { headers: { 'x-api-key': process.env.PROD_WEBHOOK_API_KEY,
+                   'Content-Type': 'application/json' }, timeout: 15000 });
+    callback({ outputFields: { status: String(res.status), sent: 'true' } });
+  } catch (err) {
+    console.error('push failed:', err.response ? err.response.status : err.message);
+    callback({ outputFields: {
+      status: String(err.response ? err.response.status : 'error'), sent: 'false' } });
+  }
+};"""
 
 
 def _epoch_ms(date_str, hour=11):
@@ -741,6 +779,17 @@ def build_push_text_workflow(page_id, pr, fmt, info):
         if a.get("actionTypeId") == "0-35" and when:      # static-date delay
             a.setdefault("fields", {}).setdefault("date", {})["staticValue"] = when
             a["fields"]["date"]["type"] = "STATIC_VALUE"
+        if a.get("type") == "WEBHOOK" and fmt == "Push":
+            flow["actions"][flow["actions"].index(a)] = {
+                "actionId": a["actionId"], "type": "CUSTOM_CODE", "runtime": "NODE20X",
+                "secretNames": ["PROD_WEBHOOK_API_KEY"],
+                "sourceCode": PUSH_CODE_TMPL % (json.dumps(info.get("title", "")),
+                                                json.dumps(info.get("body", "")),
+                                                PUSH_ENDPOINT),
+                "inputFields": [{"name": "nova_id", "value": {
+                    "propertyName": "nova_id", "type": "OBJECT_PROPERTY"}}],
+                "outputFields": [], "connection": a.get("connection")}
+            continue
         if a.get("type") == "CUSTOM_CODE" and fmt == "Text" and info.get("message"):
             code = a.get("sourceCode") or ""
             if MSG_RE.search(code):
@@ -790,15 +839,7 @@ def make_send_kit(page_id, pr, fmt):
             notion._call("PATCH", f"/pages/{page_id}",
                          {"properties": {"Hubspot Email": {"url": url}}})
             print(f"  workflow {fid} created (OFF, manual enrollment): {url}")
-            if fmt == "Push":
-                notion._call("PATCH", f"/blocks/{page_id}/children", {"children": [
-                    {"object": "block", "type": "callout", "callout": {
-                        "rich_text": [{"type": "text", "text": {"content":
-                            "Workflow built and linked, turned OFF, send date set. Last step "
-                            "(HubSpot's API can't write it): open the webhook step and paste the "
-                            "Title and Body above into the request body. Then test on yourself, "
-                            "set the real trigger, turn it on."}}],
-                        "icon": {"type": "emoji", "emoji": "🔔"}, "color": "yellow_background"}}]})
+
 
         except Exception as e:
             print("  workflow build failed:", str(e)[:200])
