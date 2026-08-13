@@ -775,6 +775,14 @@ def build_push_text_workflow(page_id, pr, fmt, info):
     # Manual enrollment only: a fresh clone must never start sending on its own.
     flow["enrollmentCriteria"] = {"shouldReEnroll": False, "type": "MANUAL"}
     when = _epoch_ms(send)
+    # A delay set to a PAST date doesn't hold — HubSpot skips it and the send fires
+    # the moment anyone enrols. Refuse rather than build a workflow that could go
+    # out immediately (Niko's Search rows were still dated 8/11 on 8/13).
+    import datetime as _dt
+    if send and send[:10] < _dt.date.today().isoformat():
+        raise RuntimeError(f"send date {send[:10]} is in the past — a delay set to a past "
+                           f"date is skipped, so this would fire on enrollment. Move the "
+                           f"Send Date forward, then re-check Ready to Build.")
     for a in list(flow["actions"]):
         if a.get("actionTypeId") == "0-35" and when:      # static-date delay
             a.setdefault("fields", {}).setdefault("date", {})["staticValue"] = when
@@ -796,7 +804,9 @@ def build_push_text_workflow(page_id, pr, fmt, info):
                 a["sourceCode"] = MSG_RE.sub(
                     lambda m: m.group(1) + info["message"].replace("`", "'") + m.group(3), code, count=1)
     new = hs("POST", "/automation/v4/flows", flow)
-    return new["id"], f"https://app.hubspot.com/workflows/{PORTAL}/flow/{new['id']}/edit"
+    # Canonical editor url. The path MUST include /platform/ — "/workflows/<portal>/
+    # flow/<id>/edit" renders "that workflow doesn't exist" (Niko hit this Aug 13).
+    return new["id"], f"https://app.hubspot.com/workflows/{PORTAL}/platform/flow/{new['id']}/edit"
 
 
 def make_send_kit(page_id, pr, fmt):
